@@ -105,6 +105,7 @@ static int mmc_bootstrap_card(char *sysfs_path)
     char new_cwd[255];
     char *devpath;
     char *uevent_params[4];
+    int param;
     char *p;
     char filename[255];
     char tmp[255];
@@ -142,24 +143,30 @@ static int mmc_bootstrap_card(char *sysfs_path)
     /*
      * Collect parameters so we can simulate a UEVENT
      */
+    param = 0;
+
     sprintf(tmp, "DEVPATH=%s", devpath);
-    uevent_params[0] = (char *) strdup(tmp);
+    uevent_params[param++] = (char *) strdup(tmp);
 
     sprintf(filename, "/sys%s/type", devpath);
     p = read_file(filename, &sz);
-    p[strlen(p) - 1] = '\0';
-    sprintf(tmp, "MMC_TYPE=%s", p);
-    free(p);
-    uevent_params[1] = (char *) strdup(tmp);
+    if (p) {
+      p[strlen(p) - 1] = '\0';
+      sprintf(tmp, "MMC_TYPE=%s", p);
+      free(p);
+      uevent_params[param++] = (char *) strdup(tmp);
+    }
 
     sprintf(filename, "/sys%s/name", devpath);
     p = read_file(filename, &sz);
-    p[strlen(p) - 1] = '\0';
-    sprintf(tmp, "MMC_NAME=%s", p);
-    free(p);
-    uevent_params[2] = (char *) strdup(tmp);
+    if (p) {
+      p[strlen(p) - 1] = '\0';
+      sprintf(tmp, "MMC_NAME=%s", p);
+      free(p);
+      uevent_params[param++] = (char *) strdup(tmp);
+    }
 
-    uevent_params[3] = (char *) NULL;
+    uevent_params[param++] = (char *) NULL;
 
     if (simulate_uevent("mmc", devpath, "add", uevent_params) < 0) {
         LOGE("Error simulating uevent (%m)");
