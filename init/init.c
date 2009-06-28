@@ -424,7 +424,7 @@ static void msg_stop(const char *name)
     if (svc) {
         service_stop(svc);
     } else {
-        ERROR("no such service '%s'\n");
+	    ERROR("no such service '%s'\n", name);
     }
 }
 
