@@ -91,7 +91,6 @@ parse_mount_options(char *arg, unsigned long rwflag, struct extra_opts *extra, i
 {
 	char *s;
     
-    *loop = 0;
 	while ((s = strsep(&arg, ",")) != NULL) {
 		char *opt = s;
 		unsigned int i;
@@ -100,10 +99,10 @@ parse_mount_options(char *arg, unsigned long rwflag, struct extra_opts *extra, i
 		if (no)
 			s += 2;
 
-        if (strcmp(s, "loop") == 0) {
-            *loop = 1;
-            continue;
-        }
+		if (strcmp(s, "loop") == 0) {
+		  *loop = 1;
+		  continue;
+		}
 		for (i = 0, res = 1; i < ARRAY_SIZE(options); i++) {
 			res = strcmp(s, options[i].str);
 
@@ -223,7 +222,7 @@ int mount_main(int argc, char *argv[])
 {
 	char *type = NULL;
 	int c;
-	int loop;
+	int loop = 0;
 
 	progname = argv[0];
 	rwflag = MS_VERBOSE;
