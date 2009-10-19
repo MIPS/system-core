@@ -3,7 +3,7 @@
 ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up
 route add default gw 10.0.2.2 dev eth0
 
-qemud=`getprop.ro.kernel.android.qemud`
+qemud=`getprop ro.kernel.android.qemud`
 if test -z "$qemud"; then
     radio_ril=`getprop ro.kernel.android.ril`
     if test -z "$radio_ril"; then
