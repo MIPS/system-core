@@ -38,6 +38,8 @@
 
 #include <linux/input.h>
 
+#include <asm/sigcontext.h>
+
 #include <private/android_filesystem_config.h>
 
 #include "utility.h"
@@ -810,6 +812,52 @@ done:
     if(fd != -1) close(fd);
 }
 
+void debuggerd_signal_handler(int n, siginfo_t *siginfo, void *ucontext)
+{
+    struct sigcontext *sc = (struct sigcontext *)ucontext;
+
+    /* avoid picking up GC interrupts */
+    signal(SIGUSR1, SIG_IGN);
+
+    /* reset this signal handler in case it happens again */
+    signal(n, SIG_DFL);
+
+    LOG("debuggerd: caught signal %s - giving up\n", get_signame(n));
+
+#ifdef __arm__
+    LOG(" r0 %08x  r1 %08x  r2 %08x  r3 %08x\n",
+	sc->arm_r0, sc->arm_r1, sc->arm_r2, sc->arm_r3);
+    LOG(" r4 %08x  r5 %08x  r6 %08x  r7 %08x\n",
+	sc->arm_r4, sc->arm_r5, sc->arm_r6, sc->arm_r7);
+    LOG(" r8 %08x  r9 %08x  10 %08x  fp %08x\n",
+	sc->arm_r8, sc->arm_r9, sc->arm_r10, sc->arm_fp);
+    LOG(" ip %08x  sp %08x  lr %08x  pc %08x  cpsr %08x\n",
+	sc->arm_ip, sc->arm_sp, sc->arm_lr, sc->arm_pc, sc->arm_cpsr);
+#endif
+#ifdef __mips__
+    LOG(" zr %08x  at %08x  v0 %08x  v1 %08x\n",
+	sc->sc_regs[0], sc->sc_regs[1], sc->sc_regs[2], sc->sc_regs[3]);
+    LOG(" a0 %08x  a1 %08x  a2 %08x  a3 %08x\n",
+	sc->sc_regs[4], sc->sc_regs[5], sc->sc_regs[6], sc->sc_regs[7]);
+    LOG(" t0 %08x  t1 %08x  t2 %08x  t3 %08x\n",
+	sc->sc_regs[8], sc->sc_regs[9], sc->sc_regs[10], sc->sc_regs[11]);
+    LOG(" t4 %08x  t5 %08x  t6 %08x  t7 %08x\n",
+	sc->sc_regs[12], sc->sc_regs[13], sc->sc_regs[14], sc->sc_regs[15]);
+    LOG(" s0 %08x  s1 %08x  s2 %08x  s3 %08x\n",
+	sc->sc_regs[16], sc->sc_regs[17], sc->sc_regs[18], sc->sc_regs[19]);
+    LOG(" s4 %08x  s5 %08x  s6 %08x  s7 %08x\n",
+	sc->sc_regs[20], sc->sc_regs[21], sc->sc_regs[22], sc->sc_regs[23]);
+    LOG(" t8 %08x  t9 %08x  k0 %08x  k1 %08x\n",
+	sc->sc_regs[24], sc->sc_regs[25], sc->sc_regs[26], sc->sc_regs[27]);
+    LOG(" gp %08x  sp %08x  s8 %08x  ra %08x\n",
+	sc->sc_regs[28], sc->sc_regs[29], sc->sc_regs[30], sc->sc_regs[31]);
+    LOG(" hi %08x  lo %08x              epc %08x\n",
+	sc->sc_mdhi, sc->sc_mdlo, sc->sc_pc);
+#endif
+
+    exit(1);
+}
+
 int main(int argc, char **argv)
 {
     int s;
@@ -831,6 +879,26 @@ int main(int argc, char **argv)
     act.sa_flags = SA_NOCLDWAIT;
     sigaction(SIGCHLD, &act, 0);
     
+    /*
+     * Once the socket is open, the default signal handling
+     * installed by debugger_init() will attempt to connect to it.
+     * That doesn't help if debuggerd is the problem,
+     * so override the signal handlers here
+     */
+    act.sa_sigaction = debuggerd_signal_handler;
+    sigemptyset(&act.sa_mask);
+    act.sa_flags = SA_SIGINFO;
+
+    sigaction(SIGILL, &act, NULL);
+    sigaction(SIGABRT, &act, NULL);
+    sigaction(SIGBUS, &act, NULL);
+    sigaction(SIGFPE, &act, NULL);
+    sigaction(SIGSEGV, &act, NULL);
+#if defined(SIGSTKFLT)
+    sigaction(SIGSTKFLT, &act, NULL);
+#endif
+    sigaction(SIGPIPE, &act, NULL);
+
     s = socket_local_server("android:debuggerd", 
             ANDROID_SOCKET_NAMESPACE_ABSTRACT, SOCK_STREAM);
     if(s < 0) return -1;
