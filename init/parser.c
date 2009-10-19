@@ -256,6 +256,7 @@ textresume:
             x++;
             goto textdone;
         case '\n':
+	    state->line++;
             state->nexttoken = T_NEWLINE;
             x++;
             goto textdone;
