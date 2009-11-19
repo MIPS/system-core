@@ -902,10 +902,10 @@ void ArmToMipsAssembler::LDRH(int cc, int Rd, int Rn, uint32_t offset)
             amode.value = 0;
             // fall thru to next case ....
         case AMODE_IMM_8_PRE:      // no support yet for writeback
-            mMips->LH(Rd, Rn, amode.value);
+            mMips->LHU(Rd, Rn, amode.value);
             break;
         case AMODE_IMM_8_POST:
-            mMips->LH(Rd, Rn, 0);
+            mMips->LHU(Rd, Rn, 0);
             mMips->ADDIU(Rn, Rn, amode.value);
             break;
         case AMODE_REG_PRE:
@@ -915,7 +915,7 @@ void ArmToMipsAssembler::LDRH(int cc, int Rd, int Rn, uint32_t offset)
             } else {
                 mMips->SUBU(R_at, Rn, abs(amode.reg));
             }
-            mMips->LH(Rd, R_at, 0);
+            mMips->LHU(Rd, R_at, 0);
             break;
     }
 }
