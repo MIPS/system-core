@@ -185,7 +185,12 @@ void dump_stack_and_code(int tfd, int pid, mapinfo *map,
     if (frame0_pc_sane) {
         _LOG(tfd, only_in_tombstone, "\ncode around lr:\n");
 
+#ifdef __arm__
         end = p = r.ARM_lr & ~3;
+#endif
+#ifdef __mips__
+        end = p = REG(r.regs[31]) & ~3;
+#endif
         p -= 16;
         end += 16;
 

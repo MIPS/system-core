@@ -194,16 +194,14 @@
 /*
  * Add any extra platform-specific defines here.
  */
-#ifndef __linux__
 #define __linux__
-#endif
 
 /*
  * Define if we have <malloc.h> header
  */
 #define HAVE_MALLOC_H
 
-/*
+/* 
  * Define if we're running on *our* linux on device or emulator.
  */
 #define HAVE_ANDROID_OS 1
@@ -305,8 +303,18 @@
 #define HAVE_WRITEV 1
 
 /*
- * Whether or not _Unwind_Context is defined as a struct.
+ * Define if <stdint.h> exists.
  */
-#define HAVE_UNWIND_CONTEXT_STRUCT
+#define HAVE_STDINT_H 1
+
+/*
+ * Define if <stdbool.h> exists.
+ */
+#define HAVE_STDBOOL_H 1
+
+/*
+ * Define if <sched.h> exists.
+ */
+#define HAVE_SCHED_H 1
 
 #endif /* _ANDROID_CONFIG_H */
