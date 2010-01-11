@@ -122,6 +122,7 @@ const char *get_signame(int sig)
     case SIGFPE:     return "SIGFPE";
     case SIGSEGV:    return "SIGSEGV";
     case SIGSTKFLT:  return "SIGSTKFLT";
+    case SIGPIPE:    return "SIGPIPE";
     default:         return "?";
     }
 }
@@ -835,7 +836,9 @@ static void handle_crashing_process(int fd)
             case SIGBUS:
             case SIGFPE:
             case SIGSEGV:
-            case SIGSTKFLT: {
+            case SIGSTKFLT:
+            case SIGPIPE:
+	    {
                 XLOG("stopped -- fatal signal\n");
                 need_cleanup = engrave_tombstone(cr.pid, tid, debug_uid, n);
                 kill(tid, SIGSTOP);
