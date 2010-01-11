@@ -101,11 +101,15 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := libcutils
 LOCAL_SRC_FILES := $(commonSources) ashmem-dev.c mq.c
 
+ifeq ($(TARGET_ARCH),mips)
+LOCAL_SRC_FILES += memset32_mips.S atomic-android-mips.S
+endif
 ifeq ($(TARGET_ARCH),arm)
 LOCAL_SRC_FILES += memset32.S atomic-android-arm.S
-else  # !arm
+endif
+ifeq ($(TARGET_ARCH),x86)
 LOCAL_SRC_FILES += memory.c
-endif # !arm
+endif
 
 LOCAL_C_INCLUDES := $(KERNEL_HEADERS)
 LOCAL_STATIC_LIBRARIES := liblog
