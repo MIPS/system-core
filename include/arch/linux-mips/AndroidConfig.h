@@ -319,4 +319,9 @@
  */
 #define HAVE_SCHED_H 1
 
+/*
+ * Whether or not _Unwind_Context is defined as a struct.
+ */
+#define HAVE_UNWIND_CONTEXT_STRUCT
+
 #endif /* _ANDROID_CONFIG_H */
