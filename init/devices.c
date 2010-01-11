@@ -305,8 +305,10 @@ static void make_device(const char *path, int block, int major, int minor)
 
     mode = get_device_perm(path, &uid, &gid) | (block ? S_IFBLK : S_IFCHR);
     dev = (major << 8) | minor;
-    mknod(path, mode, dev);
-    chown(path, uid, gid);
+    unlink("/dev/.initdev");
+    mknod("/dev/.initdev", mode, dev);
+    chown("/dev/.initdev", uid, gid);
+    rename("/dev/.initdev", path);
 }
 
 #ifdef LOG_UEVENTS
