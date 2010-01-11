@@ -38,6 +38,8 @@
 
 #include <linux/input.h>
 
+#include <asm/sigcontext.h>
+
 #include <private/android_filesystem_config.h>
 
 #include "utility.h"
