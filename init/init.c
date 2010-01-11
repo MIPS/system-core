@@ -803,8 +803,7 @@ int main(int argc, char **argv)
 
     act.sa_handler = sigchld_handler;
     act.sa_flags = SA_NOCLDSTOP;
-    act.sa_mask = 0;
-    act.sa_restorer = NULL;
+    sigemptyset(&act.sa_mask);
     sigaction(SIGCHLD, &act, 0);
 
     /* clear the umask */
