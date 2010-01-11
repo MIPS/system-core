@@ -465,7 +465,8 @@ static int load_firmware(int fw_fd, int loading_fd, int data_fd)
     write(loading_fd, "1", 1);  /* start transfer */
 
     while (len_to_copy > 0) {
-        char buf[PAGE_SIZE];
+#define BUFFER_SIZE 4096	
+        char buf[BUFFER_SIZE];
         ssize_t nr;
 
         nr = read(fw_fd, buf, sizeof(buf));
