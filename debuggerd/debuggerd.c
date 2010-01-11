@@ -120,6 +120,7 @@ const char *get_signame(int sig)
     case SIGABRT:    return "SIGABRT";
     case SIGBUS:     return "SIGBUS";
     case SIGFPE:     return "SIGFPE";
+    case SIGPIPE:    return "SIGPIPE";
     case SIGSEGV:    return "SIGSEGV";
 #ifdef SIGSTKFLT
     case SIGSTKFLT:  return "SIGSTKFLT";
@@ -851,6 +852,7 @@ static void handle_crashing_process(int fd)
             case SIGBUS:
             case SIGFPE:
             case SIGSEGV:
+            case SIGPIPE:
 #ifdef SIGSTKFLT
             case SIGSTKFLT:
 #endif
