@@ -175,11 +175,12 @@ void ArmToMipsAssembler::prolog()
 {
     mArmPC[mInum++] = pc();  // save starting PC for this instr
     
-    mMips->ADDIU(R_sp, R_sp, -(4 * 4));
+    mMips->ADDIU(R_sp, R_sp, -(5 * 4));
     mMips->SW(R_s0, R_sp, 0);
     mMips->SW(R_s1, R_sp, 4);
     mMips->SW(R_s2, R_sp, 8);
     mMips->SW(R_s3, R_sp, 12);
+    mMips->SW(R_s4, R_sp, 16);
     mMips->MOVE(R_v0, R_a0);    // move context * passed in a0 to v0 (arm r0)
                                 // optimize this out later
     
@@ -193,7 +194,8 @@ void ArmToMipsAssembler::epilog(uint32_t touched)
     mMips->LW(R_s1, R_sp, 4);
     mMips->LW(R_s2, R_sp, 8);
     mMips->LW(R_s3, R_sp, 12);
-    mMips->ADDIU(R_sp, R_sp, (4 * 4));
+    mMips->LW(R_s4, R_sp, 16);
+    mMips->ADDIU(R_sp, R_sp, (5 * 4));
     mMips->JR(R_ra);
     
 }
@@ -366,10 +368,27 @@ static const char * const dpOpNames[] = {
     "TST", "TEQ", "CMP", "CMN", "ORR", "MOV", "BIC", "MVN"
 };
 
+// check if the operand registers from a previous CMP or S-bit instruction
+// would be overwritten by this instruction. If so, move the value to a
+// safe register.
+// Note that we cannot tell at _this_ instruction time if a future (conditional)
+// instruction will _also_ use this value (a defect of the simple 1-pass, one-
+// instruction-at-a-time translation). Therefore we must be conservative and
+// save the value before it is overwritten. This costs an extra MOVE instr.
+
+void ArmToMipsAssembler::protectConditionalOperands(int Rd)
+{
+    if (Rd == cond.r1) {
+        mMips->MOVE(R_cmp, cond.r1);
+        cond.r1 = R_cmp;
+    }
+    if (cond.type == CMP_COND && Rd == cond.r2) {
+        mMips->MOVE(R_cmp2, cond.r2);
+        cond.r2 = R_cmp2;        
+    }
+}
 
 
-
-enum { SRC_REG = 0, SRC_IMM = 1, SRC_ERROR = -1 };
 
 // interprets the addressing mode, and generates the common code
 // used by the majority of data-processing ops. Many MIPS instructions
@@ -379,7 +398,8 @@ enum { SRC_REG = 0, SRC_IMM = 1, SRC_ERROR = -1 };
 // this works with the imm(), reg_imm() methods above, which are directly
 // called by the GLLAssembler.
 // note: _signed parameter defaults to false (un-signed)
-int ArmToMipsAssembler::dataProcAdrModes(int op, int& source, bool _signed)
+// note: tmpReg parameter defaults to 1, MIPS register AT
+int ArmToMipsAssembler::dataProcAdrModes(int op, int& source, bool _signed, int tmpReg)
 {
     if (op < AMODE_REG) {
         source = op;
@@ -387,11 +407,11 @@ int ArmToMipsAssembler::dataProcAdrModes(int op, int& source, bool _signed)
     } else if (op == AMODE_IMM) {
         if ((!_signed && amode.value > 0xffff)
                 || (_signed && ((int)amode.value < -32768 || (int)amode.value > 32767) )) {
-            mMips->LUI(R_at, (amode.value >> 16));
+            mMips->LUI(tmpReg, (amode.value >> 16));
             if (amode.value & 0x0000ffff) {
-                mMips->ORI(R_at, R_at, (amode.value & 0x0000ffff));
+                mMips->ORI(tmpReg, tmpReg, (amode.value & 0x0000ffff));
             }
-            source = R_at;
+            source = tmpReg;
             return SRC_REG;
         } else {
             source = amode.value;
@@ -399,17 +419,17 @@ int ArmToMipsAssembler::dataProcAdrModes(int op, int& source, bool _signed)
         }
     } else if (op == AMODE_REG_IMM) {
         switch (amode.stype) {
-            case LSL: mMips->SLL(R_at, amode.reg, amode.value); break;
-            case LSR: mMips->SRL(R_at, amode.reg, amode.value); break;
-            case ASR: mMips->SRA(R_at, amode.reg, amode.value); break;
+            case LSL: mMips->SLL(tmpReg, amode.reg, amode.value); break;
+            case LSR: mMips->SRL(tmpReg, amode.reg, amode.value); break;
+            case ASR: mMips->SRA(tmpReg, amode.reg, amode.value); break;
             case ROR: if (mips32r2) {
-                          mMips->ROTR(R_at, amode.reg, amode.value);
+                          mMips->ROTR(tmpReg, amode.reg, amode.value);
                       } else {
-                          mMips->RORIsyn(R_at, amode.reg, amode.value);
+                          mMips->RORIsyn(tmpReg, amode.reg, amode.value);
                       }
                       break;
         }
-        source = R_at;
+        source = tmpReg;
         return SRC_REG;
     } else {  // adr mode RRX is not used in GGL Assembler at this time
         // we are screwed, this should be exception, assert-fail or something
@@ -426,6 +446,7 @@ void ArmToMipsAssembler::dataProcessing(int opcode, int cc,
     
     
     if (cc != AL) {
+        protectConditionalOperands(Rd);
         // the branch tests register(s) set by prev CMP or instr with 'S' bit set
         // inverse the condition to jump past this conditional instruction
         ArmToMipsAssembler::B(cc^1, cond.label[++cond.labelnum]);   // FIXME: fixed size of label array
@@ -561,31 +582,30 @@ void ArmToMipsAssembler::dataProcessing(int opcode, int cc,
         break;
 
     case opCMP:
-        // WARNING: making an _Assumption_ that source regs will not change
-        // between CMP instruction and the conditional that uses them. This is
-        // ok in the GGLAssembler code today, but could be violated in the 
-        // future. The alternative is save to temp regs, which means two more
-        // instructions for EVERY conditional. (they are already expensive)
+        // Either operand of a CMP instr could get overwritten by a subsequent
+        // conditional instruction, which is ok, _UNLESS_ there is a _second_
+        // conditional instruction. Under MIPS, this requires doing the comparison
+        // again (SLT), and the original operands must be available. (and this
+        // pattern of multiple conditional instructions from same CMP _is_ used
+        // in GGL-Assembler)
+        //
+        // For now, if a conditional instr overwrites the operands, we will 
+        // move them to dedicated temp regs. This is ugly, and inefficient,
+        // and should be optimized.
+        //
+        // WARNING: making an _Assumption_ that CMP operand regs will NOT be
+        // trashed by intervening NON-conditional instructions. In the general
+        // case this is legal, but it is NOT currently done in GGL-Assembler.
 
-        // uint32_t* starting_pc = pc();    ==============================================>>> FIXME
         cond.type = CMP_COND;
         cond.r1 = Rn;
-        if (dataProcAdrModes(Op2, src) == SRC_REG) {
+        if (dataProcAdrModes(Op2, src, false, R_cmp2) == SRC_REG) {
             cond.r2 = src;
-            
         } else {                        // adr mode was SRC_IMM
-            cond.r2 = R_cmp;
-            mMips->MOVE(R_cmp, R_at);   // FIXME: generating EXTRA move here (to get it working)
-                                        //  should mod dataProcAdrModes to save to R_cmp directly
+            mMips->ORI(R_cmp2, R_zero, src);
+            cond.r2 = R_cmp2;
         }
         
-        // FIXME: remove test code (to align disassembly of arm & mips)
-        // printf("COMPARE: type %d, r1: %d, r2: %d ------------\n", cond.type, cond.r1, cond.r2);
-        // if (pc() == starting_pc) {
-        //     // weird case for CMP, we may not generate ANY code
-        //     // if so, remove the saved ArmPC, to be used for debug display
-        //     mInum--;
-        // }
         break;
 
         
@@ -791,6 +811,9 @@ void ArmToMipsAssembler::LDR(int cc, int Rd, int Rn, uint32_t offset)
             }
             break;
         case AMODE_IMM_12_POST:
+            if (Rn == ARMAssemblerInterface::SP) {    // FIXME: too kludgy ?
+                Rn = R_sp;      // convert STR thru Arm SP to STR thru Mips SP
+            }
             mMips->LW(Rd, Rn, 0);
             mMips->ADDIU(Rn, Rn, amode.value);
             break;

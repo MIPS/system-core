@@ -171,7 +171,11 @@ private:
     
     
     void init_conditional_labels(void);                             // FIXME: this is so freakin lame
-    int dataProcAdrModes(int op, int& source, bool sign = false);
+    
+    void protectConditionalOperands(int Rd);
+    
+    // FIXME: reg__tmp set to MIPS AT, reg 1 (symbol definition should be moved above this)
+    int dataProcAdrModes(int op, int& source, bool sign = false, int reg_tmp = 1);
 
     sp<Assembly>        mAssembly;
     MIPSAssembler*      mMips;
@@ -179,6 +183,12 @@ private:
 
     enum misc_constants_t {
         MAX_INSTUCTIONS = 500  // FIXME: confusion on if this is Arm or Mips
+    };
+    
+    enum { 
+        SRC_REG = 0, 
+        SRC_IMM, 
+        SRC_ERROR = -1 
     };
     
     enum addr_modes {
@@ -203,7 +213,7 @@ private:
         SBIT_COND
     };
 
-    struct cond_mode_t {    // address modes for current ARM instruction
+    struct cond_mode_t {    // conditional-execution info for current ARM instruction
         cond_types  type;
         int         r1;
         int         r2;
@@ -536,7 +546,8 @@ enum mips_regnames {
 
     // arm regs 0-15 are mips regs 2-17 (meaning s0 & s1 are used)
     R_at2  = R_s2,    // R_at2 = 18 = s2
-    R_cmp  = R_s3     // R_cmp = 19 = s3
+    R_cmp  = R_s3,    // R_cmp = 19 = s3
+    R_cmp2 = R_s4     // R_cmp2 = 20 = s4
 };
 
 
