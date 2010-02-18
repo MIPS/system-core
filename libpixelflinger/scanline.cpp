@@ -214,7 +214,7 @@ void scanline_wrapper(context_t* c)
         // evaluate property
         char value[PROPERTY_VALUE_MAX];
         value[0] = '\0';
-        property_get("debug.pf.asm", value, "0"); // seems to take 6-7us on RMI
+        property_get("debug.pf.asm", value, "1"); // seems to take 6-7us on RMI
         use_assembly_scanline = (atoi(value) == 0) ? false : true;
 
 
@@ -341,7 +341,7 @@ static void pick_scanline(context_t* c)
     // generate assembly pixel-pipeline based on property
     char value[PROPERTY_VALUE_MAX];
     value[0] = '\0';
-    property_get("debug.pf.asm", value, "0"); // seems to take 6-7us on RMI
+    property_get("debug.pf.asm", value, "1"); // seems to take 6-7us on RMI
     
     if (atoi(value) == 1) {
         // generate code for our pixel pipeline
