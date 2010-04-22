@@ -39,6 +39,8 @@
  * MIPS instruction set.
  */
 
+#include <endian.h>
+
 /*
  * Define the instruction formats.
  */
@@ -77,8 +79,7 @@ typedef union {
         unsigned op: 6;     /* always '0x11' */
     } FRType;
 #endif
-#if 0
-// #if BYTE_ORDER == BIG_ENDIAN  // FIXME: byte ordering directives not working in Android
+#if BYTE_ORDER == BIG_ENDIAN
     struct {
         unsigned op: 6;
         unsigned rs: 5;
