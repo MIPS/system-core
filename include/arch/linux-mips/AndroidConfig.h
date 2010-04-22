@@ -151,7 +151,12 @@
  * HAVE_BIG_ENDIAN -- we are big endian.
  */
 #define HAVE_ENDIAN_H
+#if defined(__MIPSEB__)
+#define HAVE_BIG_ENDIAN
+#endif
+#if defined(__MIPSEL__)
 #define HAVE_LITTLE_ENDIAN
+#endif
 
 /*
  * We need to choose between 32-bit and 64-bit off_t.  All of our code should
