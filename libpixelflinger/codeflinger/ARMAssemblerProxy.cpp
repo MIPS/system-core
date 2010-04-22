@@ -249,6 +249,12 @@ void ARMAssemblerProxy::SWPB(int cc, int Rn, int Rd, int Rm) {
 void ARMAssemblerProxy::SWI(int cc, uint32_t comment) {
     mTarget->SWI(cc, comment);
 }
+void ARMAssemblerProxy::REV(int cc, int Rd, int Rm) {
+    mTarget->REV(cc, Rd, Rm);
+}
+void ARMAssemblerProxy::REV16(int cc, int Rd, int Rm) {
+    mTarget->REV16(cc, Rd, Rm);
+}
 
 
 void ARMAssemblerProxy::PLD(int Rn, uint32_t offset) {

@@ -136,6 +136,8 @@ public:                                                                         
     virtual void SWP(int cc, int Rn, int Rd, int Rm);
     virtual void SWPB(int cc, int Rn, int Rd, int Rm);
     virtual void SWI(int cc, uint32_t comment);
+    virtual void REV(int cc, int Rd, int Rm);
+    virtual void REV16(int cc, int Rd, int Rm);
 
     virtual void PLD(int Rn, uint32_t offset);
     virtual void CLZ(int cc, int Rd, int Rm);
@@ -321,6 +323,7 @@ public:
 
     void CLO(int Rd, int Rs);
     void CLZ(int Rd, int Rs);
+    void WSBH(int Rd, int Rt);
 
 
 #if 0

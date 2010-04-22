@@ -372,6 +372,15 @@ void ARMAssembler::SWPB(int cc, int Rn, int Rd, int Rm) {
 void ARMAssembler::SWI(int cc, uint32_t comment) {
     *mPC++ = (cc<<28) | (0xF<<24) | comment;
 }
+void ARMAssembler::REV(int cc, int Rd, int Rm)
+{
+    *mPC++ = (cc<<28) | 0x6BF0F30| (Rd<<12) | Rm;
+}
+void ARMAssembler::REV16(int cc, int Rd, int Rm)
+{
+    *mPC++ = (cc<<28) | 0x6BF0FB0| (Rd<<12) | Rm;
+}
+
 
 #if 0
 #pragma mark -
