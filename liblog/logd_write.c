@@ -24,6 +24,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <endian.h>
 
 #include <cutils/logger.h>
 #include <cutils/logd.h>
@@ -136,6 +137,7 @@ int __android_log_write(int prio, const char *tag, const char *msg)
 {
     struct iovec vec[3];
     log_id_t log_id = LOG_ID_MAIN;
+    unsigned char wprio = (unsigned char)prio;
 
     if (!tag)
         tag = "";
@@ -151,7 +153,7 @@ int __android_log_write(int prio, const char *tag, const char *msg)
         !strcmp(tag, "SMS"))
             log_id = LOG_ID_RADIO;
 
-    vec[0].iov_base   = (unsigned char *) &prio;
+    vec[0].iov_base   = &wprio;
     vec[0].iov_len    = 1;
     vec[1].iov_base   = (void *) tag;
     vec[1].iov_len    = strlen(tag) + 1;
@@ -201,6 +203,8 @@ int __android_log_bwrite(int32_t tag, const void *payload, size_t len)
 {
     struct iovec vec[2];
 
+    tag = htole32(tag);
+
     vec[0].iov_base = &tag;
     vec[0].iov_len = sizeof(tag);
     vec[1].iov_base = (void*)payload;
@@ -218,6 +222,8 @@ int __android_log_btwrite(int32_t tag, char type, const void *payload,
     size_t len)
 {
     struct iovec vec[3];
+
+    tag = htole32(tag);
 
     vec[0].iov_base = &tag;
     vec[0].iov_len = sizeof(tag);
