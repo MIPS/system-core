@@ -200,12 +200,10 @@ inline GGLfixed gglMulx(GGLfixed a, GGLfixed b, int shift) {
     if (__builtin_constant_p(shift)) {
         if (shift == 0) {
             asm ("mult %[a], %[b] \t\n"
-            "li  %[tmp],1\t\n"
-            "sll  %[tmp],%[tmp],0x1f\t\n"             /*1<<(-1) = 1<<(0x1f)*/
-            "mflo  %[res]   \t\n"
-            "subu %[res],%[res],%[tmp]   \t\n"
+              "mflo  %[res]   \t\n"
             : [res]"=&r"(result),[tmp]"=&r"(tmp)
             : [a]"r"(a),[b]"r"(b)
+            : "%hi","%lo"
             );
         } else if (shift == 32)
         {
@@ -221,6 +219,7 @@ inline GGLfixed gglMulx(GGLfixed a, GGLfixed b, int shift) {
             "addu %[res],%[res],%[tmp1]\t\n"
             : [res]"=&r"(result),[tmp]"=&r"(tmp),[tmp1]"=&r"(tmp1)
             : [a]"r"(a),[b]"r"(b),[shift]"I"(shift)
+            : "%hi","%lo"
             );
         } else if ((shift >0) && (shift < 32))
         {
@@ -238,6 +237,7 @@ inline GGLfixed gglMulx(GGLfixed a, GGLfixed b, int shift) {
             "or    %[res],%[res],%[tmp] \t\n"  
             : [res]"=&r"(result),[tmp]"=&r"(tmp),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
             : [a]"r"(a),[b]"r"(b),[lshift]"I"(32-shift),[rshift]"I"(shift),[shiftm1]"I"(shift-1)
+            : "%hi","%lo"
             );
         } else {
             asm ("mult %[a], %[b] \t\n"
@@ -259,6 +259,7 @@ inline GGLfixed gglMulx(GGLfixed a, GGLfixed b, int shift) {
             "movz  %[res],%[tmp],%[bit5] \t\n"   
             : [res]"=&r"(result),[tmp]"=&r"(tmp),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
             : [a]"r"(a),[b]"r"(b),[norbits]"I"(~(shift)),[rshift]"I"(shift),[shiftm1] "I"(shift-1),[bit5]"I"(shift & 0x20)
+            : "%hi","%lo"
             );
         }
     } else {
@@ -281,6 +282,7 @@ inline GGLfixed gglMulx(GGLfixed a, GGLfixed b, int shift) {
         "movz  %[res],%[tmp],%[bit5] \t\n"   
          : [res]"=&r"(result),[tmp]"=&r"(tmp),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
          : [a]"r"(a),[b]"r"(b),[norbits]"r"(~(shift)),[rshift] "r"(shift),[shiftm1]"r"(shift-1),[bit5] "r"(shift & 0x20)
+         : "%hi","%lo"
          );
         }
 
@@ -298,6 +300,7 @@ inline GGLfixed gglMulAddx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
                  "addu  %[lo],%[lo],%[c]    \t\n"
                  : [lo]"=&r"(result)
                  : [a]"r"(a),[b]"r"(b),[c]"r"(c)
+                 : "%hi","%lo"
                  );
                 } else if (shift == 32) {
                     asm ("mult %[a], %[b] \t\n"
@@ -305,6 +308,7 @@ inline GGLfixed gglMulAddx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
                     "addu  %[lo],%[lo],%[c]    \t\n"
                     : [lo]"=&r"(result)
                     : [a]"r"(a),[b]"r"(b),[c]"r"(c)
+                    : "%hi","%lo"
                     );
                 } else if ((shift>0) && (shift<32)) {
                     asm ("mult %[a], %[b] \t\n"
@@ -316,6 +320,7 @@ inline GGLfixed gglMulAddx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
                     "addu  %[res],%[res],%[c]    \t\n"
                     : [res]"=&r"(result),[t]"=&r"(t)
                     : [a]"r"(a),[b]"r"(b),[c]"r"(c),[lshift]"I"(32-shift),[rshift]"I"(shift)
+                    : "%hi","%lo"
                     );
                 } else {
                     asm ("mult %[a], %[b] \t\n"
@@ -332,6 +337,7 @@ inline GGLfixed gglMulAddx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
                     "addu  %[res],%[res],%[c]    \t\n"
                     : [res]"=&r"(result),[t]"=&r"(t),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
                     : [a]"r"(a),[b]"r"(b),[c]"r"(c),[shift]"I"(shift)
+                    : "%hi","%lo"
                     );
                 }
             } else {
@@ -349,6 +355,7 @@ inline GGLfixed gglMulAddx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
                 "addu  %[res],%[res],%[c]    \t\n"
                 : [res]"=&r"(result),[t]"=&r"(t),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
                 : [a]"r"(a),[b]"r"(b),[c]"r"(c),[shift]"r"(shift)
+                : "%hi","%lo"
                 );
             }
             return result;
@@ -365,6 +372,7 @@ inline GGLfixed gglMulSubx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
                  "subu  %[lo],%[lo],%[c]    \t\n"
                  : [lo]"=&r"(result)
                  : [a]"r"(a),[b]"r"(b),[c]"r"(c)
+                 : "%hi","%lo"
                  );
                 } else if (shift == 32) {
                     asm ("mult %[a], %[b] \t\n"
@@ -372,6 +380,7 @@ inline GGLfixed gglMulSubx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
                     "subu  %[lo],%[lo],%[c]    \t\n"
                     : [lo]"=&r"(result)
                     : [a]"r"(a),[b]"r"(b),[c]"r"(c)
+                    : "%hi","%lo"
                     );
                 } else if ((shift>0) && (shift<32)) {
                     asm ("mult %[a], %[b] \t\n"
@@ -383,6 +392,7 @@ inline GGLfixed gglMulSubx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
                     "subu  %[res],%[res],%[c]    \t\n"
                     : [res]"=&r"(result),[t]"=&r"(t)
                     : [a]"r"(a),[b]"r"(b),[c]"r"(c),[lshift]"I"(32-shift),[rshift]"I"(shift)
+                    : "%hi","%lo"
                     );
                 } else {
                     asm ("mult %[a], %[b] \t\n"
@@ -399,6 +409,7 @@ inline GGLfixed gglMulSubx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
                      "subu  %[res],%[res],%[c]    \t\n"
                      : [res]"=&r"(result),[t]"=&r"(t),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
                      : [a]"r"(a),[b]"r"(b),[c]"r"(c),[shift]"I"(shift)
+                     : "%hi","%lo"
                      );
                     } 
                 } else {
@@ -416,6 +427,7 @@ inline GGLfixed gglMulSubx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
                 "subu  %[res],%[res],%[c]    \t\n"
                 : [res]"=&r"(result),[t]"=&r"(t),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
                 : [a]"r"(a),[b]"r"(b),[c]"r"(c),[shift]"r"(shift)
+                : "%hi","%lo"
                 );
             }
     return result;
