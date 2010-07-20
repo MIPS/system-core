@@ -130,7 +130,7 @@ static int __write_to_log_init(log_id_t log_id, struct iovec *vec, size_t nr)
     return write_to_log(log_id, vec, nr);
 }
 
-int __android_log_write(int prio, const char *tag, const char *msg)
+int __android_log_write(unsigned char prio, const char *tag, const char *msg)
 {
     struct iovec vec[3];
     log_id_t log_id = LOG_ID_MAIN;
@@ -149,7 +149,7 @@ int __android_log_write(int prio, const char *tag, const char *msg)
         !strcmp(tag, "SMS"))
             log_id = LOG_ID_RADIO;
 
-    vec[0].iov_base   = (unsigned char *) &prio;
+    vec[0].iov_base   = &prio;
     vec[0].iov_len    = 1;
     vec[1].iov_base   = (void *) tag;
     vec[1].iov_len    = strlen(tag) + 1;
@@ -193,7 +193,7 @@ int __android_log_vprint(int prio, const char *tag, const char *fmt, va_list ap)
 
     vsnprintf(buf, LOG_BUF_SIZE, fmt, ap);
 
-    return __android_log_write(prio, tag, buf);
+    return __android_log_write((unsigned char)prio, tag, buf);
 }
 
 int __android_log_print(int prio, const char *tag, const char *fmt, ...)
@@ -205,7 +205,7 @@ int __android_log_print(int prio, const char *tag, const char *fmt, ...)
     vsnprintf(buf, LOG_BUF_SIZE, fmt, ap);
     va_end(ap);
 
-    return __android_log_write(prio, tag, buf);
+    return __android_log_write((unsigned char)prio, tag, buf);
 }
 
 int __android_log_buf_print(int bufID, int prio, const char *tag, const char *fmt, ...)
