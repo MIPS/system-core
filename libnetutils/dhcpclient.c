@@ -88,12 +88,12 @@ int fatal(const char *reason)
 const char *ipaddr(uint32_t addr)
 {
     static char buf[32];
-
+    addr = ntohl(addr);
     sprintf(buf,"%d.%d.%d.%d",
-            addr & 255,
-            ((addr >> 8) & 255),
+            (addr >> 24),
             ((addr >> 16) & 255),
-            (addr >> 24));
+            ((addr >> 8) & 255),
+	    addr & 255);
     return buf;
 }
 
