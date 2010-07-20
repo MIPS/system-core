@@ -56,7 +56,7 @@ $(INSTALLED_RAMDISK_TARGET): $(file)
 
 # init.usb.rc is handled by build/target/product/core.rc
 
-# Just like /system/etc/init.goldfish.sh, the /init.godlfish.rc is here
+# Just like /system/etc/init.goldfish.sh, the /init.goldfish.rc is here
 # to allow -user builds to properly run the dex pre-optimization pass in
 # the emulator.
 file := $(TARGET_ROOT_OUT)/init.goldfish.rc
