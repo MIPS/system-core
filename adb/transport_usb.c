@@ -38,16 +38,8 @@ static inline void fix_endians(apacket *p)
     p->msg.data_check  = H4(p->msg.data_check);
     p->msg.magic       = H4(p->msg.magic);
 }
-unsigned host_to_le32(unsigned n)
-{
-    return H4(n);
-}
 #else
 #define fix_endians(p) do {} while (0)
-unsigned host_to_le32(unsigned n)
-{
-    return n;
-}
 #endif
 
 static int remote_read(apacket *p, atransport *t)
