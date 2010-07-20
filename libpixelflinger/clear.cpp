@@ -125,7 +125,7 @@ static void ggl_clear(void* con, GGLbitfield mask)
                     gglFixedToIteratedColor(c->state.clear.b),
                     gglFixedToIteratedColor(c->state.clear.a));
 
-            c->state.clear.colorPacked = GGL_HOST_TO_RGBA(colorPacked);
+            c->state.clear.colorPacked = colorPacked;
         }
         const uint32_t packed = c->state.clear.colorPacked;
         memset2d(c, c->state.buffers.color, packed, l, t, w, h);
