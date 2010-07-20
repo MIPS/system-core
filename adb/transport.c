@@ -25,6 +25,21 @@
 #define   TRACE_TAG  TRACE_TRANSPORT
 #include "adb.h"
 
+#if __BYTE_ORDER == __BIG_ENDIAN
+#define H4(x)	(((x) & 0xFF000000) >> 24) | (((x) & 0x00FF0000) >> 8) | (((x) & 0x0000FF00) << 8) | (((x) & 0x000000FF) << 24)
+static inline void fix_endians(apacket *p)
+{
+    p->msg.command     = H4(p->msg.command);
+    p->msg.arg0        = H4(p->msg.arg0);
+    p->msg.arg1        = H4(p->msg.arg1);
+    p->msg.data_length = H4(p->msg.data_length);
+    p->msg.data_check  = H4(p->msg.data_check);
+    p->msg.magic       = H4(p->msg.magic);
+}
+#else
+#define fix_endians(p) do {} while (0)
+#endif
+
 static void transport_unref(atransport *t);
 
 static atransport transport_list = {
@@ -105,6 +120,8 @@ read_packet(int  fd, apacket** ppacket)
         }
     }
 
+    fix_endians(*ppacket);
+
 #if ADB_TRACE
     if (ADB_TRACING)
     {
@@ -158,6 +175,9 @@ write_packet(int  fd, apacket** ppacket)
         dump_hex((*ppacket)->data, len);
     }
 #endif
+
+    fix_endians(*ppacket);
+
     len = sizeof(ppacket);
     while(len > 0) {
         r = adb_write(fd, p, len);
