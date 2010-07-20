@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <dirent.h>
+#include <arpa/inet.h>
 
 static int verbose = 0;
 
@@ -41,11 +42,12 @@ const char *ipaddr(unsigned addr)
 {
     static char buf[32];
     
+    addr = ntohl(addr);
     sprintf(buf,"%d.%d.%d.%d", 
-            addr & 255,
+            (addr >> 24),
+            ((addr >> 16) & 255),
             ((addr >> 8) & 255),
-            ((addr >> 16) & 255), 
-            (addr >> 24));
+            addr & 255);
     return buf;
 }
 
