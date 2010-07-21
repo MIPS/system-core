@@ -178,6 +178,8 @@ public:
     virtual void SWP(int cc, int Rn, int Rd, int Rm) = 0;
     virtual void SWPB(int cc, int Rn, int Rd, int Rm) = 0;
     virtual void SWI(int cc, uint32_t comment) = 0;
+    virtual void REV(int cc, int Rd, int Rm) = 0;
+    virtual void REV16(int cc, int Rd, int Rm) = 0;
 
     // DSP instructions...
     enum {
