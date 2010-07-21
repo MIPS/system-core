@@ -28,10 +28,12 @@
 
 namespace android {
 
+
 // ----------------------------------------------------------------------------
 
 GGLAssembler::GGLAssembler(ARMAssemblerInterface* target)
-    : ARMAssemblerProxy(target), RegisterAllocator(), mOptLevel(7)
+    : ARMAssemblerProxy(target), 
+      RegisterAllocator(ARMAssemblerProxy::getCodegenArch()), mOptLevel(7)
 {
 }
 
@@ -68,6 +70,8 @@ int GGLAssembler::scanline(const needs_t& needs, context_t const* c)
         if (err == 0)
             break;
         opt_level--;
+        LOGI("scanline generation failed (err: %d), re-trying at opt level %d", 
+                err, opt_level);
     }
     
     // XXX: in theory, pcForLabel is not valid before generate()
@@ -78,8 +82,8 @@ int GGLAssembler::scanline(const needs_t& needs, context_t const* c)
     // build a name for our pipeline
     char name[64];    
     sprintf(name,
-            "scanline__%08X:%08X_%08X_%08X [%3d ipp]",
-            needs.p, needs.n, needs.t[0], needs.t[1], per_fragment_ops);
+            "scanline__%08X:%08X:%08X:%08X [%3d ipp]",
+            needs.n, needs.p, needs.t[0], needs.t[1], per_fragment_ops);
 
     if (err) {
         LOGE("Error while generating ""%s""\n", name);
@@ -89,6 +93,26 @@ int GGLAssembler::scanline(const needs_t& needs, context_t const* c)
 
     return generate(name);
 }
+
+// FIXME: debug routine should be removed
+#define CONTEXT_LOG(comment, item) LOGI("%s, c->" #item ": %08x", comment, (uint32_t) c->item)
+
+void GGLAssembler::dbg_log_context(context_t const* c)
+{
+    LOGI("Context * : %08x", (uint32_t) c);
+    CONTEXT_LOG("Rx", iterators.xl);
+    CONTEXT_LOG("parts.count.reg", iterators.xr);
+    CONTEXT_LOG("Ry", iterators.y);
+    
+    CONTEXT_LOG("Rs", state.buffers.color.stride);
+    CONTEXT_LOG("parts.cbPtr.reg", state.buffers.color.data);
+    
+    CONTEXT_LOG("txPtr.reg", state.texture[0].iterators.ydsdy);
+    CONTEXT_LOG("txPtr.reg", state.texture[0].iterators.ydtdy);
+    CONTEXT_LOG("txPtr.reg", generated_vars.texture[0].stride);
+    CONTEXT_LOG("txPtr.reg", generated_vars.texture[0].data);
+}
+
 
 int GGLAssembler::scanline_core(const needs_t& needs, context_t const* c)
 {
@@ -191,6 +215,7 @@ int GGLAssembler::scanline_core(const needs_t& needs, context_t const* c)
     prolog();
     // ------------------------------------------------------------------------
 
+
     build_scanline_prolog(parts, needs);
 
     if (registerFile().status())
@@ -230,6 +255,8 @@ int GGLAssembler::scanline_core(const needs_t& needs, context_t const* c)
 
             // texel generation
             build_textures(parts, regs);
+            if (registerFile().status())
+                return registerFile().status();
         }        
 
         if ((blending & (FACTOR_DST|BLEND_DST)) || 
@@ -890,6 +917,15 @@ void GGLAssembler::build_and_immediate(int d, int s, uint32_t mask, int bits)
         return;
     }
     
+    if (getCodegenArch() == CODEGEN_ARCH_MIPS) { 
+        // MIPS can do 16-bit imm in 1 instr, 32-bit in 3 instr
+        // the below ' while (mask)' code is buggy on mips
+        // since mips returns true on isValidImmediate()
+        // then we get multiple AND instr (positive logic)
+        AND( AL, 0, d, s, imm(mask) );
+        return;
+    }
+    
     int negative_logic = !isValidImmediate(mask);
     if (negative_logic) {
         mask = ~mask & size;
@@ -1002,6 +1038,11 @@ void GGLAssembler::base_offset(
 // cheezy register allocator...
 // ----------------------------------------------------------------------------
 
+
+RegisterAllocator::RegisterAllocator(int arch) : mRegs(arch)
+{
+}
+
 void RegisterAllocator::reset()
 {
     mRegs.reset();
@@ -1029,16 +1070,23 @@ RegisterAllocator::RegisterFile& RegisterAllocator::registerFile()
 
 // ----------------------------------------------------------------------------
 
-RegisterAllocator::RegisterFile::RegisterFile()
-    : mRegs(0), mTouched(0), mStatus(0)
+
+RegisterAllocator::RegisterFile::RegisterFile(int codegen_arch)
+    : mRegs(0), mTouched(0), mStatus(0), mArch(codegen_arch), mRegisterOffset(0)
 {
+    if (mArch == ARMAssemblerInterface::CODEGEN_ARCH_MIPS) {
+        mRegisterOffset = 2;    // ARM has regs 0..15, MIPS offset to 2..17
+    }
     reserve(ARMAssemblerInterface::SP);
     reserve(ARMAssemblerInterface::PC);
 }
 
-RegisterAllocator::RegisterFile::RegisterFile(const RegisterFile& rhs)
-    : mRegs(rhs.mRegs), mTouched(rhs.mTouched)
+RegisterAllocator::RegisterFile::RegisterFile(const RegisterFile& rhs, int codegen_arch)
+    : mRegs(rhs.mRegs), mTouched(rhs.mTouched), mArch(codegen_arch), mRegisterOffset(0)
 {
+    if (mArch == ARMAssemblerInterface::CODEGEN_ARCH_MIPS) {
+        mRegisterOffset = 2;    // ARM has regs 0..15, MIPS offset to 2..17
+    }
 }
 
 RegisterAllocator::RegisterFile::~RegisterFile()
@@ -1064,6 +1112,8 @@ int RegisterAllocator::RegisterFile::reserve(int reg)
                         reg);
     mRegs |= (1<<reg);
     mTouched |= mRegs;
+    reg += mRegisterOffset;     
+// LOGI("reserved: %d", reg);
     return reg;
 }
 
@@ -1071,6 +1121,7 @@ void RegisterAllocator::RegisterFile::reserveSeveral(uint32_t regMask)
 {
     mRegs |= regMask;
     mTouched |= regMask;
+// LOGI("reserved several: %08x", regMask);
 }
 
 int RegisterAllocator::RegisterFile::isUsed(int reg) const
@@ -1086,7 +1137,7 @@ int RegisterAllocator::RegisterFile::obtain()
                                      6,  7, 8, 9,
                                     10, 11 };
     const int nbreg = sizeof(priorityList);
-    int i, r;
+    int i, r, reg;
     for (i=0 ; i<nbreg ; i++) {
         r = priorityList[i];
         if (!isUsed(r)) {
@@ -1095,15 +1146,17 @@ int RegisterAllocator::RegisterFile::obtain()
     }
     // this is not an error anymore because, we'll try again with
     // a lower optimization level.
-    //LOGE_IF(i >= nbreg, "pixelflinger ran out of registers\n");
+    LOGE_IF(i >= nbreg, "pixelflinger ran out of registers: %05x (r-off: %d)", 
+                mRegs, mRegisterOffset);
     if (i >= nbreg) {
         mStatus |= OUT_OF_REGISTERS;
         // we return SP so we can more easily debug things
         // the code will never be run anyway.
         return ARMAssemblerInterface::SP; 
     }
-    reserve(r);
-    return r;
+    reg = reserve(r);
+// LOGI("obtained: %d (%d) {%04x}", reg, r, mRegs);
+    return reg;
 }
 
 bool RegisterAllocator::RegisterFile::hasFreeRegs() const
@@ -1124,18 +1177,33 @@ int RegisterAllocator::RegisterFile::countFreeRegs() const
 
 void RegisterAllocator::RegisterFile::recycle(int reg)
 {
-    LOG_FATAL_IF(!isUsed(reg),
-            "recycling unallocated register %d",
-            reg);
+    reg -= mRegisterOffset;
+
+    // FIXME: commented out, since common failure of running out of regs
+    //          triggers this assertion. Since the code is not execectued 
+    //          in that case, it does not matter. Undesriable from robustness
+    //          point of view, though
+    // LOG_FATAL_IF(!isUsed(reg),
+    //         "recycling unallocated register %d",
+    //         reg);
     mRegs &= ~(1<<reg);
+    // LOGI("recycle: %d {%04x}", reg, mRegs);
+    
 }
 
 void RegisterAllocator::RegisterFile::recycleSeveral(uint32_t regMask)
 {
-    LOG_FATAL_IF((mRegs & regMask)!=regMask,
-            "recycling unallocated registers "
-            "(recycle=%08x, allocated=%08x, unallocated=%08x)",
-            regMask, mRegs, mRegs&regMask);
+    regMask >>= mRegisterOffset;
+// LOGI("recycle several : %04x", regMask);
+
+// FIXME: commented out, since common failure of running out of regs
+//          triggers this assertion. Since the code is not execectued 
+//          in that case, it does not matter. Undesriable from robustness
+//          point of view, though
+    // LOG_FATAL_IF((mRegs & regMask)!=regMask,
+    //         "recycling unallocated registers "
+    //         "(recycle=%08x, allocated=%08x, unallocated=%08x)",
+    //         regMask, mRegs, mRegs&regMask);
     mRegs &= ~regMask;
 }
 
