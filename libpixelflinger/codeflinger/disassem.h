@@ -47,16 +47,17 @@
 extern "C" {
 #endif
 
-typedef struct {
+typedef struct disasm_interface {
 	u_int	(*di_readword)(u_int);
-	void	(*di_printaddr)(u_int);	
+	void	(*di_printaddr)(const struct disasm_interface *, u_int);	
 	void	(*di_printf)(const char *, ...);
 } disasm_interface_t;
 
 /* Prototypes for callable functions */
 
 u_int disasm(const disasm_interface_t *, u_int, int);
-void disassemble(u_int);
+// void disassemble(u_int);
+void disassemble(u_int address, char *di_buffer);
 
 #if __cplusplus
 }
