@@ -107,7 +107,7 @@ void GGLAssembler::extract(integer_t& d, int s, int h, int l, int bits)
 {
     const int maskLen = h-l;
 
-    assert(maskLen<=8);
+    assert(maskLen<=11);
     assert(h);
     
     if (h != bits) {

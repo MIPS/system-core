@@ -21,12 +21,14 @@ PIXELFLINGER_SRC_FILES:= \
     codeflinger/ARMAssemblerInterface.cpp \
     codeflinger/ARMAssemblerProxy.cpp \
     codeflinger/ARMAssembler.cpp \
+    codeflinger/MIPSAssembler.cpp \
     codeflinger/CodeCache.cpp \
     codeflinger/GGLAssembler.cpp \
     codeflinger/load_store.cpp \
     codeflinger/blending.cpp \
     codeflinger/texturing.cpp \
     codeflinger/disassem.c \
+    codeflinger/mips_disassem.c \
 	tinyutils/SharedBuffer.cpp \
 	tinyutils/VectorImpl.cpp \
 	fixed.cpp.arm \
