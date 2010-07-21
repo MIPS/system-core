@@ -269,6 +269,7 @@ typedef union {
 /*
  * Values for the 'shamt' field when OP_SPECIAL3 && func OP_BSHFL.
  */
+#define OP_WSBH     002
 #define OP_SEB      020
 #define OP_SEH      030
 
