@@ -92,6 +92,7 @@ static void rect_generic(context_t* c, size_t yc);
 static void rect_memcpy(context_t* c, size_t yc);
 
 extern "C" void scanline_t32cb16blend_arm(uint16_t*, uint32_t*, size_t);
+extern "C" void scanline_t32cb16blend_mips(uint16_t*, uint32_t*, size_t);
 extern "C" void scanline_t32cb16_arm(uint16_t *dst, uint32_t *src, size_t ct);
 
 // ----------------------------------------------------------------------------
@@ -1323,6 +1324,8 @@ void scanline_t32cb16blend(context_t* c)
 
 #if ((ANDROID_CODEGEN >= ANDROID_CODEGEN_ASM) && defined(__arm__))
     scanline_t32cb16blend_arm(dst, src, ct);
+#elif ((ANDROID_CODEGEN >= ANDROID_CODEGEN_ASM) && defined(__mips__))
+    scanline_t32cb16blend_mips(dst, src, ct);
 #else
     while (ct--) {
         uint32_t s = *src++;
