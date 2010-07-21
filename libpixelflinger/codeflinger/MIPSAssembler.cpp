@@ -62,8 +62,8 @@
 #define DBG_PRINT(...)
 #endif
 
-// this really needs to come from the gcc options
-#if 0
+
+#if defined(__mips__) && __mips==32 && __mips_isa_rev>=2
 #define mips32r2 1
 #else
 #define mips32r2 0
@@ -1041,6 +1041,39 @@ void ArmToMipsAssembler::SWI(int cc, uint32_t comment) {
     mMips->NOP2();
     NOT_IMPLEMENTED();
 }
+void ArmToMipsAssembler::REV(int cc, int Rd, int Rm)
+{
+    mArmPC[mInum++] = pc();
+    if (mips32r2) {
+	mMips->WSBH(Rd, Rm);
+	mMips->ROTR(Rd, Rd, 16);
+    } else { // Rd = Rm>>24 | Rm<<24 | (Rm>>8) & 0xff00 | ((Rm & 0xff00)<<8);
+	mMips->SRL(R_at, Rm, 24);
+	mMips->SLL(R_at2, Rm, 24);
+	mMips->OR(R_at, R_at, R_at2);
+	mMips->ANDI(R_at2, Rm, 0xff00);
+	mMips->SLL(R_at2, R_at2, 8);
+	mMips->OR(R_at, R_at, R_at2);
+	mMips->SRL(R_at2, Rm, 8);
+	mMips->ANDI(R_at2, R_at2, 0xff00);
+	mMips->OR(Rd, R_at, R_at2);
+    }
+}
+void ArmToMipsAssembler::REV16(int cc, int Rd, int Rm)
+{
+    mArmPC[mInum++] = pc();
+    if (mips32r2) {
+	mMips->WSBH(Rd, Rm);
+    } else {  // Rd = (Rm & 0x00ff00ff)<<8 | (Rm>>8) & 0x00ff00ff;
+        mMips->LUI(R_at, 0x00ff);
+        mMips->ORI(R_at, R_at, 0x00ff);
+	mMips->AND(R_at2, Rm, R_at);
+        mMips->SLL(R_at2, R_at2, 8);
+        mMips->SRL(Rd, Rm, 8);
+        mMips->AND(Rd, Rd, R_at);
+        mMips->OR(Rd, Rd, R_at2);
+    }
+}
 
 #if 0
 #pragma mark -
@@ -1760,7 +1793,12 @@ void MIPSAssembler::CLZ(int Rd, int Rs)
     DBG_PRINT("%08x: %08x   clz %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rs);
 }
 
-
+void MIPSAssembler::WSBH(int Rd, int Rt)      // mips32r2
+{
+    *mPC++ = (spec3_op<<OP_SHF) | (bshfl_fn<<FUNC_SHF) | (wsbh_fn << SA_SHF) |
+                        (Rt<<RT_SHF) | (Rd<<RD_SHF);
+    DBG_PRINT("%08x: %08x   wsbh %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rt);
+}
 
 
 #if 0

@@ -331,6 +331,10 @@ db_disasm_insn(int insn, db_addr_t loc, bool altfmt)
                     reg_name[i.RType.rs],
                     i.RType.rd+1,
                     i.RType.shamt);
+        else if (i.RType.func == OP_BSHFL && i.RType.shamt == OP_WSBH)
+            db_printf("wsbh\t%s,%s",
+                reg_name[i.RType.rd],
+                reg_name[i.RType.rt]);
         else if (i.RType.func == OP_BSHFL && i.RType.shamt == OP_SEB)
             db_printf("seb\t%s,%s",
                 reg_name[i.RType.rd],
