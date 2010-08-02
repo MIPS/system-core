@@ -76,7 +76,6 @@ DBG	tne	$t2
 	subu	$a2,$t2
 .Lloop64:
 	addu	$a0,64
-	pref	30,0($a0)
 	sw	$a1,-64($a0)
 	sw	$a1,-60($a0)
 	sw	$a1,-56($a0)
@@ -85,7 +84,6 @@ DBG	tne	$t2
 	sw	$a1,-44($a0)
 	sw	$a1,-40($a0)
 	sw	$a1,-36($a0)
-	pref	30,32($a0)
 	sw	$a1,-32($a0)
 	sw	$a1,-28($a0)
 	sw	$a1,-24($a0)
