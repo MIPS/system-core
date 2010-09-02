@@ -65,7 +65,11 @@
 #define DEBUG__CODEGEN_ONLY     0
 
 
+#ifdef __mips__
+#define ASSEMBLY_SCRATCH_SIZE   4096
+#else
 #define ASSEMBLY_SCRATCH_SIZE   2048
+#endif
 
 // ----------------------------------------------------------------------------
 namespace android {
