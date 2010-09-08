@@ -452,6 +452,7 @@ inline int64_t gglMulii(int32_t x, int32_t y) {
         "mflo %0   \t\n"
         : "=r"(u.s.lo), "=&r"(u.s.hi)
         : "%r"(x), "r"(y)
+	: "%hi","%lo"
         );
     return u.res;
 }
