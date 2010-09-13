@@ -62,7 +62,7 @@
 // #define DISABLE_ARM_PEEPHOLE
 
 // Uncomment to save input to a text file in DEBUG_DUMP_PATTERN
-// #define DEBUG_SAVE_INPUT_TO_FILE
+#define DEBUG_SAVE_INPUT_TO_FILE
 
 #ifdef DEBUG_SAVE_INPUT_TO_FILE
 #ifdef ARM_USE_VFP
@@ -2541,7 +2541,7 @@ class MIPSCodeGenerator : public CodeGenerator {
                     strcat(str, gpn(i));
                     strcat(str, ", ");
                 }
-            LOGD("# Pushing Regs: %s\n", str);
+            if (dbglog) fprintf(dbglog, "# Pushing Regs: %s\n", str);
         }
 #endif
 
@@ -2592,7 +2592,7 @@ class MIPSCodeGenerator : public CodeGenerator {
                     strcat(str, gpn(i));
                     strcat(str, ", ");
                 }
-            LOGD("# POPing Regs: %s\n", str);
+            if (dbglog) fprintf(dbglog, "# POPing Regs: %s\n", str);
         }
 #endif
 
@@ -2691,7 +2691,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
             MOV(A0, MIPS_INT_REG, __LINE__);
             callRuntime((void*) runtime_int_to_float);
-            MOV(MIPS_INT_REG, V0, __LINE__);
 #endif
         }
         if (tagTOS != TY_FLOAT) {
@@ -2702,10 +2701,12 @@ class MIPSCodeGenerator : public CodeGenerator {
             MTC1(MIPS_INT_TMPREG, MIPS_FLOAT_TMPREG, __LINE__);
             CVT_S_W(MIPS_FLOAT_REG_STACK, MIPS_FLOAT_TMPREG, __LINE__);
 #else
+            MOV(MIPS_INT_BACKUP_REG, MIPS_INT_REG, 0);
             LW(MIPS_INT_TMPREG, 0, SP, __LINE__);
             MOV(A0, MIPS_INT_TMPREG, __LINE__);
             callRuntime((void*) runtime_int_to_float);
             MOV(A1, V0, __LINE__);
+            MOV(MIPS_INT_REG, MIPS_INT_BACKUP_REG, 0);
 #endif
         } else {
 #ifdef MIPS_USE_HARDFLOAT
@@ -2745,7 +2746,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                 MOV(A0, MIPS_INT_REG, __LINE__);
                 callRuntime((void*) runtime_int_to_double);
-                MOVDBL(MIPS_INT_REG, V0, __LINE__);
 #endif
             } else {
                 assert(tagR0 == TY_FLOAT);
@@ -2754,7 +2754,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                 MOV(A0, MIPS_INT_REG, __LINE__);
                 callRuntime((void*) runtime_float_to_double);
-                MOVDBL(MIPS_INT_REG, V0, __LINE__);
 #endif
             }
         }
@@ -2771,6 +2770,7 @@ class MIPSCodeGenerator : public CodeGenerator {
                 CVT_D_S(MIPS_FLOAT_REG_STACK, MIPS_FLOAT_TMPREG, __LINE__);
             }
 #else
+            MOVDBL(MIPS_INT_BACKUP_REG, MIPS_INT_REG, 0);
             LW(A0, 0, SP, __LINE__);
             if (tagTOS == TY_INT) {
                 callRuntime((void*) runtime_int_to_double);
@@ -2779,6 +2779,7 @@ class MIPSCodeGenerator : public CodeGenerator {
                 callRuntime((void*) runtime_float_to_double);
             }
             MOVDBL(A2, V0, __LINE__);
+            MOVDBL(MIPS_INT_REG, MIPS_INT_BACKUP_REG, 0);
 #endif
             decStack(4, __LINE__);
         } else {
@@ -2925,9 +2926,9 @@ class MIPSCodeGenerator : public CodeGenerator {
 #endif
 
 #ifdef MIPS_USE_HARDFLOAT
-            LOGD("Using MIPS hardware floating point.");
+            LOGD("Using MIPS HARDWARE floating point support.");
 #else
-            LOGD("Using MIPS soft floating point.");
+            LOGD("Using MIPS SOFTWARE EMULATED floating point support.");
 #endif
         }
 
@@ -2998,33 +2999,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 
             // inc stack usage
             finalStackSize += localVariableSize;
-
-            {
-                Type* pReturnType = pDecl->pHead;
-    
-                switch(pReturnType->tag) {
-                case TY_VOID:
-                    break;
-#ifdef    MIPS_USE_HARDFLOAT
-                case TY_DOUBLE:
-                    MOV_D(FV0, MIPS_FLOAT_REG, __LINE__);
-                    break;
-                case TY_FLOAT:
-                    MOV_S(FV0, MIPS_FLOAT_REG, __LINE__);
-                    break;
-#else
-                case TY_DOUBLE:
-                    MOVDBL(V0, MIPS_INT_REG, __LINE__);
-                    break;
-                case TY_FLOAT:
-                    /* Fall through */
-#endif
-                case TY_INT:
-                default:
-                    MOV(V0, MIPS_INT_REG, __LINE__);
-                    break;
-                }
-            }
 
             // Restore the registers saved
             decStack(localVariableSize, __LINE__);
@@ -3126,7 +3100,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                     MOV(A0, MIPS_INT_REG, __LINE__);
                     callRuntime((void*) runtime_is_non_zero_f);
-                    MOV(MIPS_INT_REG, V0, __LINE__);
                     pc = getPC();
                     if (l) {
                         BNE(MIPS_INT_REG, ZERO, t, __LINE__);
@@ -3145,7 +3118,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                     MOVDBL(A0, MIPS_INT_REG, __LINE__);
                     callRuntime((void*) runtime_is_non_zero_d);
-                    MOV(MIPS_INT_REG, V0, __LINE__);
                     pc = getPC();
                     if (l) {
                         BNE(MIPS_INT_REG, ZERO, t, __LINE__);
@@ -3255,7 +3227,6 @@ class MIPSCodeGenerator : public CodeGenerator {
                         error("Unknown comparison op %d", op);
                         break;
                 }
-                MOV(MIPS_INT_REG, V0, __LINE__);
 #endif
             } else {
                 setupFloatArgs();
@@ -3280,27 +3251,21 @@ class MIPSCodeGenerator : public CodeGenerator {
                 switch(op) {
                     case OP_EQUALS:
                         callRuntime((void*) runtime_cmp_eq_ff);
-                        MOV(MIPS_INT_REG, V0, __LINE__);
                         break;
                     case OP_NOT_EQUALS:
                         callRuntime((void*) runtime_cmp_ne_ff);
-                        MOV(MIPS_INT_REG, V0, __LINE__);
                         break;
                     case OP_LESS_EQUAL:
                         callRuntime((void*) runtime_cmp_le_ff);
-                        MOV(MIPS_INT_REG, V0, __LINE__);
                         break;
                     case OP_GREATER:
                         callRuntime((void*) runtime_cmp_gt_ff);
-                        MOV(MIPS_INT_REG, V0, __LINE__);
                         break;
                     case OP_GREATER_EQUAL:
                         callRuntime((void*) runtime_cmp_ge_ff);
-                        MOV(MIPS_INT_REG, V0, __LINE__);
                         break;
                     case OP_LESS:
                         callRuntime((void*) runtime_cmp_lt_ff);
-                        MOV(MIPS_INT_REG, V0, __LINE__);
                         break;
                     default:
                         error("Unknown comparison op %d", op);
@@ -3453,10 +3418,6 @@ class MIPSCodeGenerator : public CodeGenerator {
                         error("Unsupported binary floating operation %d\n", op);
                         break;
                     }
-#ifndef MIPS_USE_HARDFLOAT
-                    // Save the result in reg
-                    MOVDBL(MIPS_INT_REG, V0, __LINE__);
-#endif
                 } else { /* Float type */
                     setupFloatArgs();
                     switch(op) {
@@ -3492,10 +3453,6 @@ class MIPSCodeGenerator : public CodeGenerator {
                         error("Unsupported binary floating operation %d\n", op);
                         break;
                     }
-#ifndef MIPS_USE_HARDFLOAT
-                    // Save the result in reg
-                    MOV(MIPS_INT_REG, V0, __LINE__);
-#endif
                 }
                 setR0Type(pResultType);
             }
@@ -3529,7 +3486,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                         MOV(A0, MIPS_INT_REG, __LINE__);
                         callRuntime((void*) runtime_is_zero_f);
-                        MOV(MIPS_INT_REG, V0, __LINE__);
 #endif
                         break;
                     case TY_DOUBLE:
@@ -3546,7 +3502,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                         MOVDBL(A0, MIPS_INT_REG, __LINE__);
                         callRuntime((void*) runtime_is_zero_d);
-                        MOV(MIPS_INT_REG, V0, __LINE__);
 #endif
                         break;
                     default:
@@ -3591,7 +3546,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                                 MOVDBL(A0, MIPS_INT_REG, __LINE__);
                                 callRuntime((void*) runtime_op_neg_f);
-                                MOV(MIPS_INT_REG, V0, __LINE__);
 #endif
                             } else {
 #ifdef MIPS_USE_HARDFLOAT
@@ -3601,7 +3555,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                                 MOVDBL(A0, MIPS_INT_REG, __LINE__);
                                 callRuntime((void*) runtime_op_neg_d);
-                                MOVDBL(MIPS_INT_REG, V0, __LINE__);
 #endif
                             }
                             break;
@@ -3914,7 +3867,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                         MOV(A0, MIPS_INT_REG, __LINE__);
                         callRuntime((void*) runtime_int_to_float);
-                        MOV(MIPS_INT_REG, V0, __LINE__);
 #endif
                     } else {
                         assert(destTag == TY_DOUBLE);
@@ -3924,7 +3876,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                         MOV(A0, MIPS_INT_REG, __LINE__);
                         callRuntime((void*) runtime_int_to_double);
-                        MOVDBL(MIPS_INT_REG, V0, __LINE__);
 #endif
                     }
                 } else if (r0Tag == TY_FLOAT) {
@@ -3935,7 +3886,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                         MOV(A0, MIPS_INT_REG, __LINE__);
                         callRuntime((void*) runtime_float_to_int);
-                        MOV(MIPS_INT_REG, V0, __LINE__);
 #endif
                     } else {
                         assert(destTag == TY_DOUBLE);
@@ -3944,7 +3894,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                         MOV(A0, MIPS_INT_REG, __LINE__);
                         callRuntime((void*) runtime_float_to_double);
-                        MOVDBL(MIPS_INT_REG, V0, __LINE__);
 #endif
                     }
                 } else {
@@ -3956,7 +3905,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                             MOVDBL(A0, MIPS_INT_REG, __LINE__);
                             callRuntime((void*) runtime_double_to_int);
-                            MOV(MIPS_INT_REG, V0, __LINE__);
 #endif
                         } else {
                             if(destTag == TY_FLOAT) {
@@ -3965,7 +3913,6 @@ class MIPSCodeGenerator : public CodeGenerator {
 #else
                                 MOVDBL(A0, MIPS_INT_REG, __LINE__);
                                 callRuntime((void*) runtime_double_to_float);
-                                MOV(MIPS_INT_REG, V0, __LINE__);
 #endif
                             } else {
                                 incompatibleTypes(pR0Type, pType);
@@ -4155,8 +4102,29 @@ class MIPSCodeGenerator : public CodeGenerator {
                         LDC1(FA0, 0, SP, __LINE__);
                     break;
                 case MIPS_CALCONV_FF:
-                    LDC1(FA0, 0, SP, __LINE__);
-                    LDC1(FA1, 8, SP, __LINE__);
+                    if (argtypes[0] == TY_FLOAT) {
+                        LWC1(FA0, 0, SP, __LINE__);
+                        if (argtypes[1] == TY_FLOAT)
+                            LWC1(FA1, 4, SP, __LINE__);
+                        else
+                            LDC1(FA1, 8, SP, __LINE__);
+                    } else {
+                        LDC1(FA0, 0, SP, __LINE__);
+                        if (argtypes[1] == TY_FLOAT)
+                            LWC1(FA1, 8, SP, __LINE__);
+                        else
+                            LDC1(FA1, 8, SP, __LINE__);
+                    }
+                    if (argtypes[0] == TY_FLOAT && argtypes[1] == TY_FLOAT) {
+                        if (argtypes[2] == TY_FLOAT)
+                            LW(A2, 8, SP, __LINE__);
+                        if (argtypes[3] == TY_FLOAT)
+                            LW(A3, 12, SP, __LINE__);
+                    } else if (argtypes[0] == TY_DOUBLE && argtypes[1] == TY_FLOAT) {
+                        if (argtypes[3] == TY_FLOAT)
+                            LW(A3, 12, SP, __LINE__);
+                    }
+
                     break;
                 case MIPS_CALCONV_IIF:
                     LW(A1, 4, SP, __LINE__);
@@ -4238,28 +4206,6 @@ class MIPSCodeGenerator : public CodeGenerator {
             Type* pReturnType = pFunc->pHead;
             setR0Type(pReturnType);
 
-            switch(pReturnType->tag) {
-            case TY_VOID:
-                break;
-            case TY_FLOAT:
-#ifdef    MIPS_USE_HARDFLOAT
-                MOV_S(MIPS_FLOAT_REG, F0, __LINE__);
-#else
-                MOV(MIPS_INT_REG, V0, __LINE__);
-#endif
-                break;
-            case TY_DOUBLE:
-#ifdef    MIPS_USE_HARDFLOAT
-                MOV_D(MIPS_FLOAT_REG, F0, __LINE__);
-#else
-                MOVDBL(MIPS_INT_REG, V0, __LINE__);
-#endif
-                break;
-            case TY_INT:
-            default:
-                MOV(MIPS_INT_REG, V0, __LINE__);
-                break;
-            }
             DBGPRNT_EXIT();
         }
 
@@ -8463,10 +8409,34 @@ void accScriptSource(ACCscript* script,
 
 extern "C"
 void accCompileScript(ACCscript* script) {
+#ifdef DEBUG
+    int counter;
+    char path[PATH_MAX];
+    for (counter = 0; counter < 4096; counter++) {
+        sprintf(path, DEBUG_GENCODE_DUMP_PATTERN, counter);
+        if(access(path, F_OK) != 0) {
+            break;
+        }
+    }
+    if (counter < 4096) {
+        dbglog = fopen(path, "w");
+        if (dbglog) {
+            LOGD("Saving assembly code to file: %s", path);
+        } else {
+            LOGD("Could not save assembly code. errno: %d", errno);
+        }
+    }
+#endif
     int result = script->compiler.compile(script->text, script->textLength);
     if (result) {
         script->setError(ACC_INVALID_OPERATION);
     }
+#ifdef DEBUG
+    if (dbglog) {
+        fclose(dbglog);
+        dbglog = NULL;
+    }
+#endif
 }
 
 extern "C"
