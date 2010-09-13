@@ -41,7 +41,12 @@
 #ifndef __ACCMIPS_H__
 #define __ACCMIPS_H__
 
+#define    ALLOW_UNALIGNED_DOUBLE_ACCESS
+
 #ifdef    DEBUG
+
+#define DEBUG_GENCODE_DUMP_PATTERN "/data/misc/acc_dump/%d.s"
+        FILE *dbglog = NULL;
         int tabs;
 #define    DBGPRNT_ENTRY()    do {   \
         int i;                       \
@@ -49,7 +54,7 @@
         for (i = 0; i < tabs; i++)   \
             str[i] = '\t';           \
         str[i] = '\0';               \
-        LOGD("%s\t#ENTRY %s\n", str,__FUNCTION__);\
+        if (dbglog) fprintf(dbglog, "%s\t#ENTRY %s\n", str,__FUNCTION__);\
         tabs++;                      \
     } while (0)
 #define    DBGPRNT_EXIT()    do {    \
@@ -59,9 +64,12 @@
         for (i = 0; i < tabs; i++)   \
             str[i] = '\t';           \
         str[i] = '\0';               \
-        LOGD("%s\t#EXIT  %s\n", str, __FUNCTION__); \
+        if (dbglog) fprintf(dbglog, "%s\t#EXIT  %s\n", str, __FUNCTION__); \
     } while (0)
-#define    DBGPRINT        LOGD
+#define    DBGPRINT(fmt, ...)        do {\
+    if (dbglog) \
+        fprintf(dbglog, fmt, ## __VA_ARGS__); \
+} while (0)
 
 #else
 
@@ -122,7 +130,8 @@
 
 
 /* Define registers for easier usage */
-#define        MIPS_INT_REG           S0
+#define        MIPS_INT_REG           V0
+#define        MIPS_INT_BACKUP_REG    T0
 #define        MIPS_INT_TMPREG        T2
 #define        MIPS_INT_TMPREG2       T3
 #define        MIPS_INT_FP            FP
@@ -131,14 +140,14 @@
 
 #ifdef    MIPS_USE_HARDFLOAT
 
-#define        MIPS_FLOAT_REG         F20
+#define        MIPS_FLOAT_REG         FV0
 #define        MIPS_FLOAT_REG2        (MIPS_FLOAT_REG + 1)
 #define        MIPS_FLOAT_TMPREG      F6
 #define        MIPS_FLOAT_TMPREG2     (MIPS_FLOAT_TMPREG + 1)
 #define        MIPS_FLOAT_REG_STACK   F8
 
 #else    // Soft Floats
-#define        MIPS_INT_REG2          S1
+#define        MIPS_INT_REG2          V1
 #endif
 
 #define        MIPSABI_BASE_ARGS_SIZE 16
@@ -565,8 +574,32 @@ static void load_mips_ins_names(void) {
 
 #define LWC1(ft, offset, base, line)  LDST(OP_LWC1, ft, offset, base, line)
 #define SWC1(ft, offset, base, line)  LDST(OP_SWC1, ft, offset, base, line)
+
+#ifdef    ALLOW_UNALIGNED_DOUBLE_ACCESS
+#ifdef    HAVE_BIG_ENDIAN
+#define    LDC1(ft, offset, base, line) do { \
+    LWC1(ft + 1, offset    , base, line);    \
+    LWC1(ft    , offset + 4, base, line);    \
+} while (0)
+#define    SDC1(ft, offset, base, line) do { \
+    SWC1(ft + 1, offset    , base, line);    \
+    SWC1(ft    , offset + 4, base, line);    \
+} while (0)
+#else
+#define    LDC1(ft, offset, base, line) do { \
+    LWC1(ft    , offset    , base, line);    \
+    LWC1(ft + 1, offset + 4, base, line);    \
+} while (0)
+#define    SDC1(ft, offset, base, line) do { \
+    SWC1(ft    , offset    , base, line);    \
+    SWC1(ft + 1, offset + 4, base, line);    \
+} while (0)
+#endif
+#else
 #define LDC1(ft, offset, base, line)  LDST(OP_LDC1, ft, offset, base, line)
 #define SDC1(ft, offset, base, line)  LDST(OP_SDC1, ft, offset, base, line)
+#endif
+
 #define LDXC1(fd, index, base, line)                                          \
     do { EMIT(R_FORMAT(OP_COP1X, base, index, 0, fd, COP1X_LDXC1), \
                            "LDXC1 %s, %s(%s) ;# @ %d", fpn(fd), gpn(index), gpn(base), line); } while (0)
