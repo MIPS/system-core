@@ -69,9 +69,9 @@ int GGLAssembler::scanline(const needs_t& needs, context_t const* c)
         err = scanline_core(needs, c);
         if (err == 0)
             break;
-        opt_level--;
-        LOGI("scanline generation failed (err: %d), re-trying at opt level %d", 
+        LOGI("scanline generation failed (err: %d), at opt level %d", 
                 err, opt_level);
+        opt_level--;
     }
     
     // XXX: in theory, pcForLabel is not valid before generate()
@@ -87,7 +87,7 @@ int GGLAssembler::scanline(const needs_t& needs, context_t const* c)
 
     if (err) {
         LOGE("Error while generating ""%s""\n", name);
-        disassemble(name);
+        // disassemble(name);
         return -1;
     }
 
@@ -1038,6 +1038,13 @@ void GGLAssembler::base_offset(
 // cheezy register allocator...
 // ----------------------------------------------------------------------------
 
+// Modified to support MIPS processors, in a very simple way. We retain the
+// (Arm) limit of 16 total registers, but shift the mapping of those registers
+// from 0-15, to 2-17. Register 0 on Mips cannot be used as GP registers, and 
+// register 1 has a traditional use as a temp).
+//
+// This simplistic scheme should be modified so Mips processors can allocate
+// more registers, which can help in some ops.
 
 RegisterAllocator::RegisterAllocator(int arch) : mRegs(arch)
 {
@@ -1105,28 +1112,32 @@ void RegisterAllocator::RegisterFile::reset()
     reserve(ARMAssemblerInterface::PC);
 }
 
+
+// RegisterFile::reserve() take a register parameter in the
+// range 0-15 (Arm compatible), but on a Mips processor, will
+// return the actual allocated register in the range 2-17.
 int RegisterAllocator::RegisterFile::reserve(int reg)
 {
+    int r = reg;
+    reg += mRegisterOffset;
     LOG_ALWAYS_FATAL_IF(isUsed(reg),
                         "reserving register %d, but already in use",
                         reg);
     mRegs |= (1<<reg);
     mTouched |= mRegs;
-    reg += mRegisterOffset;     
-// LOGI("reserved: %d", reg);
     return reg;
 }
 
+// This interface uses regMask in range 2-17 on MIPS, no translation.
 void RegisterAllocator::RegisterFile::reserveSeveral(uint32_t regMask)
 {
     mRegs |= regMask;
     mTouched |= regMask;
-// LOGI("reserved several: %08x", regMask);
 }
 
 int RegisterAllocator::RegisterFile::isUsed(int reg) const
 {
-    LOG_ALWAYS_FATAL_IF(reg>=16, "invalid register %d", reg);
+    LOG_ALWAYS_FATAL_IF(reg>=16 + (int)mRegisterOffset, "invalid register %d", reg);
     return mRegs & (1<<reg);
 }
 
@@ -1140,33 +1151,35 @@ int RegisterAllocator::RegisterFile::obtain()
     int i, r, reg;
     for (i=0 ; i<nbreg ; i++) {
         r = priorityList[i];
-        if (!isUsed(r)) {
+        if (!isUsed(r + mRegisterOffset)) {
             break;
         }
     }
     // this is not an error anymore because, we'll try again with
     // a lower optimization level.
-    LOGE_IF(i >= nbreg, "pixelflinger ran out of registers: %05x (r-off: %d)", 
-                mRegs, mRegisterOffset);
+    // LOGE_IF(i >= nbreg, "pixelflinger ran out of registers: %05x (r-off: %d)", 
+    //             mRegs, mRegisterOffset);
     if (i >= nbreg) {
         mStatus |= OUT_OF_REGISTERS;
         // we return SP so we can more easily debug things
         // the code will never be run anyway.
         return ARMAssemblerInterface::SP; 
     }
-    reg = reserve(r);
-// LOGI("obtained: %d (%d) {%04x}", reg, r, mRegs);
+    reg = reserve(r);  // Param in Arm range 0-15, reuturns range 2-17 on Mips.
     return reg;
 }
 
 bool RegisterAllocator::RegisterFile::hasFreeRegs() const
 {
-    return ((mRegs & 0xFFFF) == 0xFFFF) ? false : true;
+    uint32_t regs = mRegs >> mRegisterOffset;   // MIPS fix.
+    return ((regs & 0xFFFF) == 0xFFFF) ? false : true;
 }
 
 int RegisterAllocator::RegisterFile::countFreeRegs() const
 {
-    int f = ~mRegs & 0xFFFF;
+    uint32_t regs = mRegs >> mRegisterOffset;   // MIPS fix.
+
+    int f = ~regs & 0xFFFF;
     // now count number of 1
    f = (f & 0x5555) + ((f>>1) & 0x5555);
    f = (f & 0x3333) + ((f>>2) & 0x3333);
@@ -1177,8 +1190,6 @@ int RegisterAllocator::RegisterFile::countFreeRegs() const
 
 void RegisterAllocator::RegisterFile::recycle(int reg)
 {
-    reg -= mRegisterOffset;
-
     // FIXME: commented out, since common failure of running out of regs
     //          triggers this assertion. Since the code is not execectued 
     //          in that case, it does not matter. Undesriable from robustness
@@ -1187,15 +1198,10 @@ void RegisterAllocator::RegisterFile::recycle(int reg)
     //         "recycling unallocated register %d",
     //         reg);
     mRegs &= ~(1<<reg);
-    // LOGI("recycle: %d {%04x}", reg, mRegs);
-    
 }
 
 void RegisterAllocator::RegisterFile::recycleSeveral(uint32_t regMask)
 {
-    regMask >>= mRegisterOffset;
-// LOGI("recycle several : %04x", regMask);
-
 // FIXME: commented out, since common failure of running out of regs
 //          triggers this assertion. Since the code is not execectued 
 //          in that case, it does not matter. Undesriable from robustness

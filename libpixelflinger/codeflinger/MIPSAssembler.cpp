@@ -871,9 +871,14 @@ void ArmToMipsAssembler::STR(int cc, int Rd, int Rn, uint32_t offset)
             if (Rn == ARMAssemblerInterface::SP) {      // FIXME: too kludgy ?
                 Rn = R_sp;  // convert STR thru Arm SP to STR thru Mips SP
             }
-            mMips->SW(Rd, Rn, amode.value);
             if (amode.writeback) {      // OPTIONAL writeback on pre-index mode
+                // If we will writeback, then update the index reg, then store.
+                // This correctly handles stack-push case.
                 mMips->ADDIU(Rn, Rn, amode.value);
+                mMips->SW(Rd, Rn, 0);
+            } else {
+                // No writeback so store offset by value
+                mMips->SW(Rd, Rn, amode.value);
             }
             break;
         case AMODE_IMM_12_POST:
