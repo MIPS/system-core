@@ -2510,6 +2510,48 @@ class MIPSCodeGenerator : public CodeGenerator {
                 STACK_ALIGNMENT - (scarr[scptr-1] % STACK_ALIGNMENT)  : 0;
         }
 
+#ifdef MIPS_USE_HARDFLOAT
+        struct stackpad {
+            int stksz;
+            int scptr;
+            int pad;
+            struct stackpad *next;
+        } *stackPadRoot;
+
+        void setStackPad(int fss, int pad, int line) {
+            struct stackpad *sp = (struct stackpad*)calloc(1, sizeof(struct stackpad));
+            if (sp == NULL) {
+                LOGE("Out of memory while allocating stackpad");
+            } else {
+                incStack(pad, line);
+
+                sp->stksz = fss + pad;
+                sp->scptr = scptr;
+                sp->pad = pad;
+                sp->next = stackPadRoot;
+                stackPadRoot = sp;
+                DBGPRINT("# Pushed StackPad @ fss=%d scptr=%d pc=%#0x\n", fss, scptr, getPC());
+            }
+        }
+
+        void resetStackIfPadded(int fss, int line) {
+            if (stackPadRoot == NULL)
+                return;
+
+            int pad = 0;
+            if (stackPadRoot->stksz == fss && stackPadRoot->scptr == scptr) {
+                DBGPRINT("# Popped StackPad @ fss=%d scptr=%d pc=%#0x\n", fss, scptr, getPC());
+
+                decStack(stackPadRoot->pad, line);
+
+                struct stackpad *tmp = stackPadRoot;
+                stackPadRoot = stackPadRoot->next;
+                free(tmp);
+            } else {
+                DBGPRINT("# NOT Popping StackPad @ fss=%d scptr=%d pc=%#0x\n", fss, scptr, getPC());
+            }
+        }
+#endif
 
     /* This function is defined even with Hardware floating point unit, to load
      * the values from memory into integer argument registers - viz in printf case */
@@ -2789,6 +2831,10 @@ class MIPSCodeGenerator : public CodeGenerator {
         } else {
 #ifdef MIPS_USE_HARDFLOAT
             LDC1(MIPS_FLOAT_REG_STACK, 0, SP, __LINE__);
+
+            /* delete a pad - if unaligned earlier */
+            resetStackIfPadded(finalStackSize, __LINE__);
+
 #else
             LDDBL(A2, 0, SP, __LINE__);
 #endif
@@ -2930,6 +2976,7 @@ class MIPSCodeGenerator : public CodeGenerator {
 #endif
 
 #ifdef MIPS_USE_HARDFLOAT
+            stackPadRoot = NULL;
             LOGD("Using MIPS HARDWARE floating point support.");
 #else
             LOGD("Using MIPS SOFTWARE EMULATED floating point support.");
@@ -3589,6 +3636,10 @@ class MIPSCodeGenerator : public CodeGenerator {
             switch (r0ct ) {
             case TY_DOUBLE:
 #ifdef MIPS_USE_HARDFLOAT
+                /* Insert a pad - if unaligned */
+                if (finalStackSize % STACK_ALIGNMENT)
+                    setStackPad(finalStackSize, STACK_ALIGNMENT - (finalStackSize % STACK_ALIGNMENT), __LINE__);
+
                 SDC1(MIPS_FLOAT_REG, 0, SP, __LINE__);
 #else
                 SWDBL(MIPS_INT_REG, 0, SP, __LINE__);
@@ -3974,7 +4025,7 @@ class MIPSCodeGenerator : public CodeGenerator {
 
             if (n == 0) {
                 /* Handles Variable argument list - like printf - which have
-				 * no prototype */
+                 * no prototype */
                 for (i = 0; i < maxargs; i++) {
                      LW(A0 + i, i*4, SP, __LINE__);
                 }
