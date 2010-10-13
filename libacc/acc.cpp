@@ -3951,7 +3951,108 @@ class MIPSCodeGenerator : public CodeGenerator {
             return pc;
         }
 
-        
+        int generateArgCode(int maxargs, Type *pDecl)
+        {
+            int i;
+#ifdef    MIPS_USE_HARDFLOAT
+            int argtypes[4];
+            Type* pArgList = pDecl->pTail;
+            Type* tmpList = pArgList;
+
+            argtypes[0] = argtypes[1] = argtypes[2] = argtypes[3] = TY_UNKNOWN;
+
+            for (i = 0; tmpList && (i < 4); i++) {
+                argtypes[i] = tmpList->pHead->tag;
+                tmpList = tmpList->pTail;
+            }
+
+            int n = i;
+
+            /* First Arg is always fixed */
+            switch (argtypes[0]) {
+                case TY_FLOAT:
+                    LWC1(F12, 0, SP, __LINE__);
+                    if (n == 1)
+                        break;
+                    
+                    switch (argtypes[1]) {
+                        case TY_DOUBLE:
+                            LDC1(F14, 8, SP, __LINE__);
+                            break;
+                        case TY_FLOAT:
+                            LWC1(F14, 4, SP, __LINE__);
+
+                            if (n > 2) {
+                                LW(A2,  8, SP, __LINE__);
+                                if (argtypes[2] == TY_DOUBLE || (n > 3 && argtypes[3] != TY_DOUBLE))
+                                    LW(A3,  12, SP, __LINE__);
+                            }
+                            break;
+                        case TY_INT:
+                        default:
+                            LW(A1,  4, SP, __LINE__);
+                            if (n > 2) {
+                                LW(A2,  8, SP, __LINE__);
+                                if (argtypes[2] == TY_DOUBLE || (n > 3 && argtypes[3] != TY_DOUBLE))
+                                    LW(A3,  12, SP, __LINE__);
+                            }
+                            break;
+                    }
+                    break;
+                case TY_DOUBLE:
+                    LDC1(F12, 0, SP, __LINE__);
+                    if (n == 1)
+                        break;
+
+                    switch (argtypes[1]) {
+                        case TY_DOUBLE:
+                            LDC1(F14, 8, SP, __LINE__);
+                            break;
+                        case TY_FLOAT:
+                            LWC1(F14,  8, SP, __LINE__);
+                            if (n > 2 && argtypes[2] != TY_DOUBLE)
+                                LW(A3, 12, SP, __LINE__);
+                            break;
+                        default:
+                        case TY_INT:
+                            LW(A2,  8, SP, __LINE__);
+                            if (n > 2 && argtypes[2] != TY_DOUBLE)
+                                LW(A3, 12, SP, __LINE__);
+                            break;
+                    }
+                    break;
+                case TY_INT:
+                default:
+                    LW(A0,  0, SP, __LINE__);
+                    if (n == 1)
+                        break;
+
+                    switch (argtypes[1]) {
+                        case TY_DOUBLE:
+                            LW(A2,  8, SP, __LINE__);
+                            LW(A3, 12, SP, __LINE__);
+                            break;
+                        default:
+                            LW(A1,  4, SP, __LINE__);
+                            if (n >= 2) {
+                                LW(A2,  8, SP, __LINE__);
+                                if (n >=3) {
+                                    if (argtypes[2] == TY_DOUBLE || ((n >= 4) && argtypes[3] != TY_DOUBLE))
+                                        LW(A3, 12, SP, __LINE__);
+                                }
+                            }
+                    }
+                    break;
+            }
+#else
+            for (i = 0; i < maxargs; i++) {
+               LW(A0 + i, i*4, SP, __LINE__);
+            }
+#endif
+            return 0;
+        }
+
+
         /* Emit code to store R0 to the stack at byte offset l.
          * Returns stack size of object (typically 4 or 8 bytes)
          */
@@ -3994,62 +4095,6 @@ class MIPSCodeGenerator : public CodeGenerator {
             return asize;
         }
 
-        enum {
-            MIPS_CALCONV_IIII,
-            MIPS_CALCONV_F,
-            MIPS_CALCONV_FF,
-            MIPS_CALCONV_IF,
-            MIPS_CALCONV_IIF,
-            MIPS_CALCONV_FI,
-            MIPS_CALCONV_FII,
-            MIPS_CALCONV_VARG
-        };
-
-        /* Determine the MIPS calling convention based on the prototype */
-        int getMIPSCallConv(Type *pDecl, int *argtypes)
-        {
-            int i;
-            Type* pArgList = pDecl->pTail;
-            Type* tmpList = pArgList;
-
-            argtypes[0] = argtypes[1] = argtypes[2] = argtypes[3] = TY_UNKNOWN;
-
-            for (i = 0; tmpList && (i < 4); i++) {
-                argtypes[i] = tmpList->pHead->tag;
-                tmpList = tmpList->pTail;
-            }
-#ifdef    MIPS_USE_HARDFLOAT
-            if (pArgList == NULL) {
-                /* Variable Argument List */
-                return MIPS_CALCONV_VARG;
-            }
-            switch (argtypes[0]) {
-                case TY_FLOAT:
-                case TY_DOUBLE:
-                    if (argtypes[1] == TY_UNKNOWN)
-                        return MIPS_CALCONV_F;
-                    if (argtypes[1] == TY_FLOAT ||
-                        argtypes[1] == TY_DOUBLE)
-                        return MIPS_CALCONV_FF;
-
-                    if (argtypes[2] != TY_FLOAT &&
-                        argtypes[2] != TY_DOUBLE)
-                        return MIPS_CALCONV_FII;
-                    return MIPS_CALCONV_FI;
-                default:
-                    if (argtypes[1] != TY_UNKNOWN) {
-                        if (argtypes[2] == TY_FLOAT ||
-                            argtypes[2] == TY_DOUBLE)
-                            return MIPS_CALCONV_IF;
-                        if (argtypes[3] == TY_FLOAT ||
-                            argtypes[3] == TY_DOUBLE)
-                            return MIPS_CALCONV_IIF;
-                    }
-            }
-#endif
-            return MIPS_CALCONV_IIII;
-        }
-
         int stackAlignAdjustment;
 
         /* Patch the function call preamble.
@@ -4076,79 +4121,7 @@ class MIPSCodeGenerator : public CodeGenerator {
             if (maxargs > 4)
                 maxargs = 4;
     
-            /* MIPS has this weird calling convention semantics 
-             *  Arguments                Register Assignments
-             *  =========               =====================
-                (f1, f2, ...)            f1 -> $f12, f2 -> $f14
-                (f1, n1, f2, ...)        f1 -> $f12, n1 -> $6, f2 ->stack
-                (f1, n1, n2, ...)        f1 -> $f12, n1 -> $6, n2 -> $7
-                (n1, n2, n3, n4, ...)    n1 -> $4, n2 -> $5, n3 -> $6, n4 -> $7
-                (n1, n2, n3, f1, ...)    n1 -> $4, n2 -> $5, n3 -> $6, f1 -> stack
-                (n1, n2, f1, ...)        n1 -> $4, n2 -> $5, f1 -> ($6, $6)
-                (n1, f1, ...)            n1 -> $4, f1 -> ($6, $7)
-             */
-            int argtypes[4];
-            switch (getMIPSCallConv(pDecl, argtypes)) {
-#ifdef    MIPS_USE_HARDFLOAT
-                case MIPS_CALCONV_VARG:
-                    for (i = 0; i < maxargs; i++) {
-                        LW(A0 + i, i*4, SP, __LINE__);
-                    }
-                    break;
-                case MIPS_CALCONV_F:
-                    if (argtypes[0] == TY_FLOAT)
-                        LWC1(FA0, 0, SP, __LINE__);
-                    else
-                        LDC1(FA0, 0, SP, __LINE__);
-                    break;
-                case MIPS_CALCONV_FF:
-                    if (argtypes[0] == TY_FLOAT) {
-                        LWC1(FA0, 0, SP, __LINE__);
-                        if (argtypes[1] == TY_FLOAT)
-                            LWC1(FA1, 4, SP, __LINE__);
-                        else
-                            LDC1(FA1, 8, SP, __LINE__);
-                    } else {
-                        LDC1(FA0, 0, SP, __LINE__);
-                        if (argtypes[1] == TY_FLOAT)
-                            LWC1(FA1, 8, SP, __LINE__);
-                        else
-                            LDC1(FA1, 8, SP, __LINE__);
-                    }
-                    if (argtypes[0] == TY_FLOAT && argtypes[1] == TY_FLOAT) {
-                        if (argtypes[2] == TY_FLOAT)
-                            LW(A2, 8, SP, __LINE__);
-                        if (argtypes[3] == TY_FLOAT)
-                            LW(A3, 12, SP, __LINE__);
-                    } else if (argtypes[0] == TY_DOUBLE && argtypes[1] == TY_FLOAT) {
-                        if (argtypes[3] == TY_FLOAT)
-                            LW(A3, 12, SP, __LINE__);
-                    }
-
-                    break;
-                case MIPS_CALCONV_IIF:
-                    LW(A1, 4, SP, __LINE__);
-                    // fall through
-                case MIPS_CALCONV_IF:
-                    LW(A0, 0, SP, __LINE__);
-                    LDDBL(A2, 8, SP, __LINE__);
-                    break;
-                case MIPS_CALCONV_FII:
-                    LW(A3, 12, SP, __LINE__);
-                    // fall through
-                case MIPS_CALCONV_FI:
-                    LDDBL(A0, 0, SP, __LINE__);
-                    LW(A2, 8, SP, __LINE__);
-                    break;
-#endif
-                case MIPS_CALCONV_IIII:
-                default:
-                    /* Send via registers the first 4 args */
-                    for (i = 0; i < maxargs; i++) {
-                        LW(A0 + i, i*4, SP, __LINE__);
-                    }
-                    break;
-            }
+            generateArgCode(maxargs, pDecl);
 
             finalStackSize += l + stackAlignAdjustment;
 
