@@ -3972,6 +3972,15 @@ class MIPSCodeGenerator : public CodeGenerator {
 
             int n = i;
 
+            if (n == 0) {
+                /* Handles Variable argument list - like printf - which have
+				 * no prototype */
+                for (i = 0; i < maxargs; i++) {
+                     LW(A0 + i, i*4, SP, __LINE__);
+                }
+                return 0;
+            }
+
             /* First Arg is always fixed */
             switch (argtypes[0]) {
                 case TY_FLOAT:
