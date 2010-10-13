@@ -2498,17 +2498,21 @@ class MIPSCodeGenerator : public CodeGenerator {
                 error("Exceeded maximum number of function calls from within braces");
             }
             /* Store existing stack len */
-            scarr[scptr] = finalStackSize - 4;    // 4 is the indirect function pointer which belongs to callee
-            finalStackSize = 4;
+            scarr[scptr] = finalStackSize;
+            finalStackSize = 0;
             scptr++;
         }
         void popStackCounter(void) {
             scptr--;
-            if (finalStackSize) {
-                assert(0);
-            }
-            finalStackSize = scarr[scptr];
+            assert(finalStackSize == -4); // 4 is the popped indirect function pointer
+            finalStackSize += scarr[scptr];
         }
+
+        int getStackAlignment(void) {
+            return (scarr[scptr-1] % STACK_ALIGNMENT) ?
+                STACK_ALIGNMENT - (scarr[scptr-1] % STACK_ALIGNMENT)  : 0;
+        }
+
 
     /* This function is defined even with Hardware floating point unit, to load
      * the values from memory into integer argument registers - viz in printf case */
@@ -4113,8 +4117,7 @@ class MIPSCodeGenerator : public CodeGenerator {
 
             l = fixupArgLength(l);
 
-            stackAlignAdjustment = (finalStackSize % STACK_ALIGNMENT) ?
-                            STACK_ALIGNMENT - (finalStackSize % STACK_ALIGNMENT) : 0;
+            stackAlignAdjustment = getStackAlignment();
 
             // Replace the DUMMY with this instruction which fixes stack size correctly
             *(unsigned int*) (a) = I_FORMAT(OP_ADDIU, SP, SP, -(l + stackAlignAdjustment));
