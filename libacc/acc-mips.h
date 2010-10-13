@@ -41,7 +41,9 @@
 #ifndef __ACCMIPS_H__
 #define __ACCMIPS_H__
 
-#define    ALLOW_UNALIGNED_DOUBLE_ACCESS
+/* Uncomment the following line for debugging SIGBUS crashes which are
+ * caused on hardware FPU on unaligned memory accesses of doubles */
+//#define    ALLOW_UNALIGNED_DOUBLE_ACCESS
 
 #ifdef    DEBUG
 
@@ -585,7 +587,7 @@ static void load_mips_ins_names(void) {
     SWC1(ft + 1, offset    , base, line);    \
     SWC1(ft    , offset + 4, base, line);    \
 } while (0)
-#else
+#else    /* LITTLE Endian */
 #define    LDC1(ft, offset, base, line) do { \
     LWC1(ft    , offset    , base, line);    \
     LWC1(ft + 1, offset + 4, base, line);    \
@@ -595,10 +597,10 @@ static void load_mips_ins_names(void) {
     SWC1(ft + 1, offset + 4, base, line);    \
 } while (0)
 #endif
-#else
+#else    /* Force 8 byte alignment */
 #define LDC1(ft, offset, base, line)  LDST(OP_LDC1, ft, offset, base, line)
 #define SDC1(ft, offset, base, line)  LDST(OP_SDC1, ft, offset, base, line)
-#endif
+#endif   /* ALLOW_UNALIGNED_DOUBLE_ACCESS */
 
 #define LDXC1(fd, index, base, line)                                          \
     do { EMIT(R_FORMAT(OP_COP1X, base, index, 0, fd, COP1X_LDXC1), \
