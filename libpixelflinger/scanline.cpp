@@ -175,7 +175,12 @@ static  const needs_filter_t debug_broken_needs = {
 // ----------------------------------------------------------------------------
 
 #if ANDROID_ARM_CODEGEN
+
+#if defined(__mips__)
+static CodeCache gCodeCache(32 * 1024);
+#else
 static CodeCache gCodeCache(12 * 1024);
+#endif
 
 class ScanlineAssembly : public Assembly {
     AssemblyKey<needs_t> mKey;
