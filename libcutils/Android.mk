@@ -121,8 +121,7 @@ ifeq ($(TARGET_ARCH),sh)
 LOCAL_SRC_FILES += memory.c atomic-android-sh.c
 endif
 ifeq ($(TARGET_ARCH),mips)
-LOCAL_SRC_FILES += memset32_mips.S atomic-android-mips.S
-$(error redo atomic-android-mips.S)
+LOCAL_SRC_FILES += memset32_mips.S
 endif
 
 LOCAL_C_INCLUDES := $(KERNEL_HEADERS)
