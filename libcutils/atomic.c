@@ -16,5 +16,4 @@
 
 #define inline
 
-#error updated atomic-inline.h for mips
 #include <cutils/atomic-inline.h>
