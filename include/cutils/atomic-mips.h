@@ -75,8 +75,8 @@ extern inline int android_atomic_cas(int32_t old_value, int32_t new_value,
 		    "	move   %[status], %[new]\n"
 		    "	sc     %[status], (%[ptr])\n"
 		    "9:\n"
-		    : [prev] "=&r" (prev), [status] "=&r" (status), [ptr] "=&r"(*ptr)
-		    : [old] "r" (old_value), [new] "r" (new_value)
+		    : [prev] "=&r" (prev), [status] "=&r" (status)
+		    : [ptr] "r" (ptr), [old] "r" (old_value), [new] "r" (new_value)
 		    );
     } while (__builtin_expect(status == 0, 0));
     return prev != old_value;
@@ -109,8 +109,8 @@ extern inline int32_t android_atomic_swap(int32_t new_value,
 	    "	move %[status], %[new]\n"
 	    "	ll %[prev], (%[ptr])\n"
 	    "	sc %[status], (%[ptr])\n"
-	    : [prev] "=&r" (prev), [status] "=&r" (status), [ptr] "=&r" (ptr)
-	    : [new] "r" (new_value)
+	    : [prev] "=&r" (prev), [status] "=&r" (status)
+	    : [ptr] "r" (ptr), [new] "r" (new_value)
 	    );
     } while (__builtin_expect(status == 0, 0));
     android_memory_barrier();
@@ -127,8 +127,8 @@ extern inline int32_t android_atomic_add(int32_t increment,
 	    "	ll	%[prev], (%[ptr])\n"
 	    "	addu	%[status], %[prev], %[inc]\n"
 	    "	sc	%[status], (%[ptr])\n"
-	    :  [status] "=&r" (status), [prev] "=&r" (prev), [ptr] "=&r" (ptr)
-	    :  [inc] "Ir" (increment)
+	    :  [status] "=&r" (status), [prev] "=&r" (prev)
+	    :  [ptr] "r" (ptr), [inc] "Ir" (increment)
 	    );
     } while (__builtin_expect(status == 0, 0));
     return prev;
@@ -153,8 +153,8 @@ extern inline int32_t android_atomic_and(int32_t value, volatile int32_t *ptr)
 	    "	ll	%[prev], (%[ptr])\n"
 	    "	and	%[status], %[prev], %[value]\n"
 	    "	sc	%[status], (%[ptr])\n"
-	    : [prev] "=&r" (prev), [status] "=&r" (status), [ptr] "=&r" (ptr)
-	    : [value] "Ir" (value)
+	    : [prev] "=&r" (prev), [status] "=&r" (status)
+	    : [ptr] "r" (ptr), [value] "Ir" (value)
             );
     } while (__builtin_expect(status == 0, 0));
     return prev;
@@ -169,8 +169,8 @@ extern inline int32_t android_atomic_or(int32_t value, volatile int32_t *ptr)
 	    "	ll	%[prev], (%[ptr])\n"
 	    "	or	%[status], %[prev], %[value]\n"
 	    "	sc	%[status], (%[ptr])\n"
-	    : [prev] "=&r" (prev), [status] "=&r" (status), [ptr] "=&r" (*ptr)
-	    : [value] "Ir" (value)
+	    : [prev] "=&r" (prev), [status] "=&r" (status)
+	    : [ptr] "r" (ptr), [value] "Ir" (value)
             );
     } while (__builtin_expect(status == 0, 0));
     return prev;
