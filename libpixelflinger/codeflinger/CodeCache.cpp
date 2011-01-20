@@ -161,25 +161,11 @@ int CodeCache::cache(  const AssemblyKeyBase& keyBase,
         mCacheInUse += assemblySize;
         mWhen++;
         // synchronize caches...
-#if defined(__arm__)
         const long base = long(assembly->base());
         const long curr = base + long(assembly->size());
         err = cacheflush(base, curr, 0);
-        LOGE_IF(err, "__ARM_NR_cacheflush error %s\n",
+        LOGE_IF(err, "cacheflush error %s\n",
                 strerror(errno));
-#elif defined(__mips__)
-        // FIXME: something wrong with include file paths, 
-        // I only get the ARM defs, which are not right for mips,
-        // but these incorrect casts should work anyway
-        // const char *base = (char *)(assembly->base());
-        // const int len = (int)(assembly->size());
-        const long base = long(assembly->base());
-        const long len = long(assembly->size());
-        err = cacheflush(base, len, BCACHE);
-        LOGE_IF(err, "MIPS cacheflush error %s\n",
-                strerror(errno));
-
-#endif
     }
 
     pthread_mutex_unlock(&mLock);
