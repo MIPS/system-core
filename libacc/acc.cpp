@@ -4318,7 +4318,7 @@ class MIPSCodeGenerator : public CodeGenerator {
         virtual int finishCompile(){
             const long base = long(getBase());
             const long curr = long(getPC());
-            int err = cacheflush(base, curr - base, DCACHE);
+            int err = cacheflush(base, curr, 0);
             if (err)
                 LOGD("Error Flushing Caches: %d(%s)\n", err, strerror(errno));
             return err;
