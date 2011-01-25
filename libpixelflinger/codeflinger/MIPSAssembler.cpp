@@ -1252,6 +1252,13 @@ void ArmToMipsAssembler::SMLAW(int cc, int y,
     NOT_IMPLEMENTED();
 }
 
+// used by ARMv6 version of GGLAssembler::filter32 
+void ArmToMipsAssembler::UXTB16(int cc, int Rd, int Rm, int rotate)
+{
+    mArmPC[mInum++] = pc();
+    mMips->NOP2();
+    NOT_IMPLEMENTED();
+}
 
 
 #if 0
