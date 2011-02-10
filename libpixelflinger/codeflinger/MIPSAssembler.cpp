@@ -1256,8 +1256,21 @@ void ArmToMipsAssembler::SMLAW(int cc, int y,
 void ArmToMipsAssembler::UXTB16(int cc, int Rd, int Rm, int rotate)
 {
     mArmPC[mInum++] = pc();
-    mMips->NOP2();
-    NOT_IMPLEMENTED();
+	
+	//Rd[31:16] := ZeroExtend((Rm ROR (8 * sh))[23:16]),
+    //Rd[15:0] := ZeroExtend((Rm ROR (8 * sh))[7:0]). sh 0-3.
+	
+	mMips->ROTR(Rm, Rm, rotate*8);
+	mMips->AND(Rd, Rm, 0x00FF00FF);
+	
+	/*
+   1.
+      Rotate the value from Rm right by 0, 8, 16 or 24 bits.
+   2.
+      Do one of the following to the value obtained:
+          *
+            Extract bits[23:16] and bits[7:0] and sign or zero extend them to 16 bits. If the instruction is extend and add, add them to bits[31:16] and bits[15:0] respectively of Rn to form bits[31:16] and bits[15:0] of the result.	
+	*/
 }
 
 
