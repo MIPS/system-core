@@ -45,7 +45,7 @@ int main(int a, char** b) {
     testEqualTo();
     testNotEqualTo();
     testBitAnd();
-    testBinXor();
+    testBitXor();
     testBitOr();
     testAssignment();
     testLogicalAnd();

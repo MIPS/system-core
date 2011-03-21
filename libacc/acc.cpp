@@ -32,6 +32,11 @@
 #if defined(__arm__)
 #define DEFAULT_ARM_CODEGEN
 #define PROVIDE_ARM_CODEGEN
+#elif defined(__mips__)
+#define DEFAULT_MIPS_CODEGEN
+#define PROVIDE_MIPS_CODEGEN
+#include <asm/cachectl.h>
+#include "acc-mips.h"
 #elif defined(__i386__)
 #define DEFAULT_X86_CODEGEN
 #define PROVIDE_X86_CODEGEN
@@ -58,10 +63,12 @@
 // #define DISABLE_ARM_PEEPHOLE
 
 // Uncomment to save input to a text file in DEBUG_DUMP_PATTERN
-// #define DEBUG_SAVE_INPUT_TO_FILE
+#define DEBUG_SAVE_INPUT_TO_FILE
 
 #ifdef DEBUG_SAVE_INPUT_TO_FILE
 #ifdef ARM_USE_VFP
+#define DEBUG_DUMP_PATTERN "/data/misc/acc_dump/%d.c"
+#elif defined(PROVIDE_MIPS_CODEGEN)
 #define DEBUG_DUMP_PATTERN "/data/misc/acc_dump/%d.c"
 #else
 #define DEBUG_DUMP_PATTERN "/tmp/acc_dump/%d.c"
@@ -398,7 +405,7 @@ class Compiler : public ErrorSink {
 
         /* Test R0 and jump to a target if the test succeeds.
          * l = 0: je, l == 1: jne
-         * Return the address of the word that holds the targed data, in
+         * Return the address of the word that holds the target data, in
          * case it needs to be fixed up later.
          */
         virtual int gtst(bool l, int t) = 0;
@@ -2462,6 +2469,2079 @@ class Compiler : public ErrorSink {
 
 #endif // PROVIDE_ARM_CODEGEN
 
+#ifdef    PROVIDE_MIPS_CODEGEN
+
+/* This represents just the number of functions which can be called from within
+ * braces - like f(g(h()))... NOT for functions being called inside the code.
+ * This limitation exists due to this being a single pass compiler */
+#define MAX_FUNCTION_NESTING    32
+
+class MIPSCodeGenerator : public CodeGenerator {
+    private:
+        int finalStackSize;
+        void incStack(int d, int line) {
+            ADDIU(SP, SP, -d, line);
+            finalStackSize += d;
+        }
+        void decStack(int d, int line) {
+            finalStackSize -= d;
+            ADDIU(SP, SP, d, line);
+        }
+
+
+        /* This ensures stack alignment */
+        int scarr[MAX_FUNCTION_NESTING];
+        int scptr;
+
+        void pushStackCounter(void) {
+            if (scptr >= MAX_FUNCTION_NESTING) {
+                error("Exceeded maximum number of function calls from within braces");
+            }
+            /* Store existing stack len */
+            scarr[scptr] = finalStackSize;
+            finalStackSize = 0;
+            scptr++;
+        }
+        void popStackCounter(void) {
+            scptr--;
+            assert(finalStackSize == -4); // 4 is the popped indirect function pointer
+            finalStackSize += scarr[scptr];
+        }
+
+        int getStackAlignment(void) {
+            return (scarr[scptr-1] % STACK_ALIGNMENT) ?
+                STACK_ALIGNMENT - (scarr[scptr-1] % STACK_ALIGNMENT)  : 0;
+        }
+
+#ifdef MIPS_USE_HARDFLOAT
+        struct stackpad {
+            int stksz;
+            int scptr;
+            int pad;
+            struct stackpad *next;
+        } *stackPadRoot;
+
+        void setStackPad(int fss, int pad, int line) {
+            struct stackpad *sp = (struct stackpad*)calloc(1, sizeof(struct stackpad));
+            if (sp == NULL) {
+                LOGE("Out of memory while allocating stackpad");
+            } else {
+                incStack(pad, line);
+
+                sp->stksz = fss + pad;
+                sp->scptr = scptr;
+                sp->pad = pad;
+                sp->next = stackPadRoot;
+                stackPadRoot = sp;
+                DBGPRINT("# Pushed StackPad @ fss=%d scptr=%d pc=%#0x\n", fss, scptr, getPC());
+            }
+        }
+
+        void resetStackIfPadded(int fss, int line) {
+            if (stackPadRoot == NULL)
+                return;
+
+            int pad = 0;
+            if (stackPadRoot->stksz == fss && stackPadRoot->scptr == scptr) {
+                DBGPRINT("# Popped StackPad @ fss=%d scptr=%d pc=%#0x\n", fss, scptr, getPC());
+
+                decStack(stackPadRoot->pad, line);
+
+                struct stackpad *tmp = stackPadRoot;
+                stackPadRoot = stackPadRoot->next;
+                free(tmp);
+            } else {
+                DBGPRINT("# NOT Popping StackPad @ fss=%d scptr=%d pc=%#0x\n", fss, scptr, getPC());
+            }
+        }
+#endif
+
+    /* This function is defined even with Hardware floating point unit, to load
+     * the values from memory into integer argument registers - viz in printf case */
+    inline void LDDBL(int reg, int off, int reg2, int line) {
+        LW(reg    , off    , reg2, line);
+        LW(reg + 1, off + 4, reg2, line);
+    }
+
+#ifndef    MIPS_USE_HARDFLOAT
+    inline void SWDBL(int reg, int off, int reg2, int line) {
+        SW(reg    , off    , reg2, line);
+        SW(reg + 1, off + 4, reg2, line);
+    }
+
+    inline void MOVDBL(int dstreg, int srcreg, int line)
+    {
+        MOV(dstreg    , srcreg    , line);
+        MOV(dstreg + 1, srcreg + 1, line);
+    }
+#endif
+
+    // TODO Optimize this function
+    void pushRegs(long long regs, int basestacksize, int line) {
+        int i;
+        int stacksize = basestacksize;
+        int soff = 4;
+#ifdef    DEBUG
+        {
+            char str[64];
+            str[0] = '\0';
+            for (i = FirstReg; i <= LastReg; i++)
+                if (regs & _rmask_(i)) {
+                    strcat(str, gpn(i));
+                    strcat(str, ", ");
+                }
+            if (dbglog) fprintf(dbglog, "# Pushing Regs: %s\n", str);
+        }
+#endif
+
+        for (i = FirstReg; i <= LastReg; i++)
+            if (regs & _rmask_(i))
+                stacksize += 4;
+
+        incStack(stacksize, line);
+
+        for (i = FirstReg; i <= LastReg; i++) {
+            /* skip RA & SP - special position for them */
+            if (i == SP || i == RA)
+                continue;
+            if (regs & _rmask_(i)) {
+                if (i < F0) {
+                    SW(i, stacksize - soff, SP, line);
+                } else {
+#ifdef    MIPS_USE_HARDFLOAT
+                    SWC1(i, stacksize - soff, SP, line);
+#else
+                    assert(0);
+#endif
+                }
+                soff += 4;
+            }
+        }
+        if (_rmask_(RA) & regs) {
+            SW(RA, stacksize - soff, SP, __LINE__);
+            soff += 4;
+        }
+        if (_rmask_(SP) & regs) {
+            SW(SP, stacksize - soff, SP, __LINE__);
+            soff += 4;
+        }
+    }
+
+    void popRegs(long long regs, int basestacksize, int line) {
+        int i;
+        int stacksize = basestacksize;
+        int soff = 4;
+
+#ifdef    DEBUG
+        {
+            char str[64];
+            str[0] = '\0';
+            for (i = FirstReg; i <= LastReg; i++)
+                if (regs & _rmask_(i)) {
+                    strcat(str, gpn(i));
+                    strcat(str, ", ");
+                }
+            if (dbglog) fprintf(dbglog, "# POPing Regs: %s\n", str);
+        }
+#endif
+
+        for (i = FirstReg; i <= LastReg; i++)
+            if (regs & _rmask_(i))
+                stacksize += 4;
+
+        for (i = FirstReg; i <= LastReg; i++) {
+            /* skip RA & SP - special position for them */
+            if (i == SP || i == RA)
+                continue;
+            if (regs & _rmask_(i)) {
+                if (i < F0) {
+                    LW(i, stacksize - soff, SP, __LINE__);
+                } else {
+#ifdef    MIPS_USE_HARDFLOAT
+                    LWC1(i, stacksize - soff, SP, line);
+#else    // No FP registers
+                    assert(0);
+#endif
+                }
+                soff += 4;
+            }
+        }
+        if (_rmask_(RA) & regs) {
+            LW(RA, stacksize - soff, SP, __LINE__);
+            soff += 4;
+        }
+        if (_rmask_(SP) & regs) {
+            LW(SP, stacksize - soff, SP, __LINE__);
+            soff += 4;
+        }
+
+        decStack(stacksize, line);
+    }
+
+    Register R0Reg(void) {
+        Type* pR0Type = getR0Type();
+        TypeTag tagR0 = collapseType(pR0Type->tag);
+        
+#ifdef    MIPS_USE_HARDFLOAT
+        if (tagR0 == TY_DOUBLE || tagR0 == TY_FLOAT)
+            return MIPS_FLOAT_REG;
+#endif
+        return MIPS_INT_REG;
+    }
+
+    void callRuntime(void *fn) {
+        DBGPRNT_ENTRY();
+        int savedRegs = _rmask_(GP) | R0Reg() | _rmask_(MIPS_INT_FP);
+
+        pushRegs(savedRegs, MIPSABI_BASE_ARGS_SIZE, __LINE__);
+
+        // TODO Check if stack is aligned
+
+        loadRegImm(MIPS_LINK_REG, (int)fn, __LINE__);
+        JALR(MIPS_LINK_REG, __LINE__);
+        NOP(__LINE__);
+
+        popRegs(savedRegs, MIPSABI_BASE_ARGS_SIZE, __LINE__);
+
+        DBGPRNT_EXIT();
+    }
+
+    /* This is used to setup integer or pointer Arguments.
+     * Used only for comparisons or binary operations */
+    void setupIntPtrArgs() {
+        DBGPRNT_ENTRY();
+
+        // Pop out the stack into argument
+        LW(MIPS_INT_REG_STACK, 0, SP, __LINE__);
+        decStack(4, __LINE__);
+        popType();
+
+        DBGPRNT_EXIT();
+    }
+
+    /* Pops TOS to second tmp register
+     * Make sure both R0 and TOS are floats. (Could be ints)
+     * We know that at least one of R0 and TOS is already a float
+     */
+    void setupFloatArgs() {
+        DBGPRNT_ENTRY();
+
+        Type* pR0Type = getR0Type();
+        Type* pTOSType = getTOSType();
+        TypeTag tagR0 = collapseType(pR0Type->tag);
+        TypeTag tagTOS = collapseType(pTOSType->tag);
+
+        if (tagR0 != TY_FLOAT) {
+        /* OK R0 is an INT. Cannot be a double, since then op would be upgraded to double */
+            assert(tagR0 == TY_INT);
+#ifdef MIPS_USE_HARDFLOAT
+            MTC1(MIPS_INT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+            CVT_S_W(MIPS_FLOAT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+#else
+            MOV(A0, MIPS_INT_REG, __LINE__);
+            callRuntime((void*) runtime_int_to_float);
+#endif
+        }
+        if (tagTOS != TY_FLOAT) {
+            assert(tagTOS == TY_INT);
+            assert(tagR0 == TY_FLOAT);
+#ifdef MIPS_USE_HARDFLOAT
+            LW(MIPS_INT_TMPREG, 0, SP, __LINE__);
+            MTC1(MIPS_INT_TMPREG, MIPS_FLOAT_TMPREG, __LINE__);
+            CVT_S_W(MIPS_FLOAT_REG_STACK, MIPS_FLOAT_TMPREG, __LINE__);
+#else
+            MOV(MIPS_INT_BACKUP_REG, MIPS_INT_REG, 0);
+            LW(MIPS_INT_TMPREG, 0, SP, __LINE__);
+            MOV(A0, MIPS_INT_TMPREG, __LINE__);
+            callRuntime((void*) runtime_int_to_float);
+            MOV(A1, V0, __LINE__);
+            MOV(MIPS_INT_REG, MIPS_INT_BACKUP_REG, 0);
+#endif
+        } else {
+#ifdef MIPS_USE_HARDFLOAT
+            LWC1(MIPS_FLOAT_REG_STACK, 0, SP, __LINE__);
+#else
+            LW(A1, 0, SP, __LINE__);
+#endif
+        }
+
+        decStack(4, __LINE__);
+        popType();
+
+#ifndef MIPS_USE_HARDFLOAT
+        /* Move the arguments to the registers, since soft floats call
+         * functions to process the operation.*/
+        MOV(A0, MIPS_INT_REG, __LINE__);
+#endif
+
+        DBGPRNT_EXIT();
+    }
+
+    /* Make sure both R0 and TOS are doubles. Could be floats or ints.
+     * We know that at least one of R0 and TOS are already a double.
+     */
+    void setupDoubleArgs() {
+        DBGPRNT_ENTRY();
+        Type* pR0Type = getR0Type();
+        Type* pTOSType = getTOSType();
+        TypeTag tagR0 = collapseType(pR0Type->tag);
+        TypeTag tagTOS = collapseType(pTOSType->tag);
+
+        if (tagR0 != TY_DOUBLE) {
+            if (tagR0 == TY_INT) {
+#ifdef MIPS_USE_HARDFLOAT
+                MTC1(MIPS_INT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+                CVT_D_W(MIPS_FLOAT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+#else
+                MOV(A0, MIPS_INT_REG, __LINE__);
+                callRuntime((void*) runtime_int_to_double);
+#endif
+            } else {
+                assert(tagR0 == TY_FLOAT);
+#ifdef MIPS_USE_HARDFLOAT
+                CVT_D_S(MIPS_FLOAT_REG, MIPS_FLOAT_REG, __LINE__);
+#else
+                MOV(A0, MIPS_INT_REG, __LINE__);
+                callRuntime((void*) runtime_float_to_double);
+#endif
+            }
+        }
+
+        if (tagTOS != TY_DOUBLE) {
+#ifdef MIPS_USE_HARDFLOAT
+            if (tagTOS == TY_INT) {
+                LW(MIPS_INT_TMPREG, 0, SP, __LINE__);
+                MTC1(MIPS_INT_TMPREG, MIPS_FLOAT_TMPREG, __LINE__);
+                CVT_D_W(MIPS_FLOAT_REG_STACK, MIPS_FLOAT_TMPREG, __LINE__);
+            } else {
+                assert(tagTOS == TY_FLOAT);
+                LWC1(MIPS_FLOAT_TMPREG, 0, SP, __LINE__);
+                CVT_D_S(MIPS_FLOAT_REG_STACK, MIPS_FLOAT_TMPREG, __LINE__);
+            }
+#else
+            MOVDBL(MIPS_INT_BACKUP_REG, MIPS_INT_REG, 0);
+            LW(A0, 0, SP, __LINE__);
+            if (tagTOS == TY_INT) {
+                callRuntime((void*) runtime_int_to_double);
+            } else {
+                assert(tagTOS == TY_FLOAT);
+                callRuntime((void*) runtime_float_to_double);
+            }
+            MOVDBL(A2, V0, __LINE__);
+            MOVDBL(MIPS_INT_REG, MIPS_INT_BACKUP_REG, 0);
+#endif
+            decStack(4, __LINE__);
+        } else {
+#ifdef MIPS_USE_HARDFLOAT
+            LDC1(MIPS_FLOAT_REG_STACK, 0, SP, __LINE__);
+
+            /* delete a pad - if unaligned earlier */
+            resetStackIfPadded(finalStackSize, __LINE__);
+
+#else
+            LDDBL(A2, 0, SP, __LINE__);
+#endif
+            decStack(8, __LINE__);
+        }
+
+#ifdef MIPS_USE_HARDFLOAT
+#else
+        MOVDBL(A0, MIPS_INT_REG, __LINE__);
+#endif
+
+        popType();
+        DBGPRNT_EXIT();
+    }
+
+    class MIPSCodeBuf : public ICodeBuf {
+        ICodeBuf* mpBase;
+        ErrorSink* mErrorSink;
+
+        class CircularQueue {
+            static const int SIZE = 16; // Must be power of 2
+            static const int MASK = SIZE-1;
+            unsigned int mBuf[SIZE];
+            int mHead;
+            int mCount;
+
+        public:
+            CircularQueue() {
+                mHead = 0;
+                mCount = 0;
+            }
+
+            void pushBack(unsigned int data) {
+                mBuf[(mHead + mCount) & MASK] = data;
+                mCount += 1;
+            }
+
+            unsigned int popFront() {
+                unsigned int result = mBuf[mHead];
+                mHead = (mHead + 1) & MASK;
+                mCount -= 1;
+                return result;
+            }
+
+            void popBack(int n) {
+                mCount -= n;
+            }
+
+            inline int count() {
+                return mCount;
+            }
+
+            bool empty() {
+                return mCount == 0;
+            }
+
+            bool full() {
+                return mCount == SIZE;
+            }
+
+            // The valid indexes are 1 - count() to 0
+            unsigned int operator[](int i) {
+                return mBuf[(mHead + mCount + i) & MASK];
+            }
+        };
+
+        CircularQueue mQ;
+
+        void error(const char* fmt,...) {
+            va_list ap;
+            va_start(ap, fmt);
+            mErrorSink->verror(fmt, ap);
+            va_end(ap);
+        }
+
+        void flush() {
+            while (!mQ.empty()) {
+                mpBase->o4(mQ.popFront());
+            }
+            mpBase->flush();
+        }
+
+    public:
+        MIPSCodeBuf(ICodeBuf* pBase) {
+            mpBase = pBase;
+        }
+
+        virtual ~MIPSCodeBuf() {
+            delete mpBase;
+        }
+
+        void init(int size) {
+            mpBase->init(size);
+        }
+
+        void setErrorSink(ErrorSink* pErrorSink) {
+            mErrorSink = pErrorSink;
+            mpBase->setErrorSink(pErrorSink);
+        }
+
+        void o4(int n) {
+            if (mQ.full()) {
+                mpBase->o4(mQ.popFront());
+            }
+            mQ.pushBack(n);
+
+       }
+
+        void ob(int n) {
+            error("ob() not supported.");
+        }
+
+        void* getBase() {
+            flush();
+            return mpBase->getBase();
+        }
+
+        intptr_t getSize() {
+            flush();
+            return mpBase->getSize();
+        }
+
+        intptr_t getPC() {
+            flush();
+            return mpBase->getPC();
+        }
+    };
+
+
+    public:
+        MIPSCodeGenerator() {
+            finalStackSize = 0;
+            scptr = 0;
+            memset(scarr, 0, sizeof(scarr));
+
+#ifdef    DEBUG
+            tabs = 0;
+            load_mips_ins_names();
+#endif
+
+#ifdef MIPS_USE_HARDFLOAT
+            stackPadRoot = NULL;
+            LOGD("Using MIPS HARDWARE floating point support.");
+#else
+            LOGD("Using MIPS SOFTWARE EMULATED floating point support.");
+#endif
+        }
+
+        virtual ~MIPSCodeGenerator() {
+            if (finalStackSize) {
+                LOGD("WARNING: stack size(%d) did not go down to zero. "
+                     "this is MOSTLY a bug!\n", finalStackSize);
+                assert(0);
+            }
+        }
+
+        /* Emit a function prolog.
+         * pDecl is the function declaration, which gives the arguments.
+         * Save the old value of the FP.
+         * Set the new value of the FP.
+         * Convert from the native platform calling convention to
+         * our stack-based calling convention. This may require
+         * pushing arguments from registers to the stack.
+         * Allocate "N" bytes of stack space. N isn't known yet, so
+         * just emit the instructions for adjusting the stack, and return
+         * the address to patch up. The patching will be done in
+         * functionExit().
+         * returns address to patch with local variable size.
+        */
+        virtual int functionEntry(Type* pDecl)
+        {
+            DBGPRNT_ENTRY();
+            int i;
+            int stackUsage = 0;
+            int argSpace = 0;
+
+
+#define        FUNC_SAVED_REGS            (_rmask_(GP) | _rmask_(SP) | _rmask_(MIPS_INT_FP) | _rmask_(RA))
+#define        FUNC_SAVED_REGS_SIZE    (16)
+
+            /* Save the registers */
+            pushRegs(FUNC_SAVED_REGS, 0, __LINE__);
+            
+            // Set the Frame Pointer
+            MOV(MIPS_INT_FP, SP, __LINE__);
+
+            int pc = getPC();
+            ADDIU(SP, SP, 0, __LINE__);    // Patched in function Exit
+
+            /* Push Arguments to STACK */
+
+            DBGPRNT_EXIT();
+            return pc;
+        }
+
+        /* Emit a function epilog.
+         * Restore the old SP and FP register values.
+         * Return to the calling function.
+         * argCount - the number of arguments to the function.
+         * localVariableAddress - returned from functionEntry()
+         * localVariableSize - the size in bytes of the local variables.
+         */
+        virtual void functionExit(Type* pDecl, int localVariableAddress,
+                                  int localVariableSize){
+            DBGPRNT_ENTRY();
+
+            // Align stack to 8 bytes
+            localVariableSize = (localVariableSize + STACK_ALIGNMENT - 1) & ~(STACK_ALIGNMENT-1);
+
+            // Replace the NOP with this instruction which fixes stack size correctly
+            *(unsigned int*) (localVariableAddress) = I_FORMAT(OP_ADDIU, SP, SP, -localVariableSize);
+            DBGPRINT("# PATCH funcexit @ %#0x with - ADDIU SP, SP, -%d\n", localVariableAddress, localVariableSize);
+
+            // inc stack usage
+            finalStackSize += localVariableSize;
+
+            // Restore the registers saved
+            decStack(localVariableSize, __LINE__);
+            popRegs(FUNC_SAVED_REGS, 0, __LINE__);
+
+            JR(RA, __LINE__);    // Return
+            NOP(__LINE__);    // Branch Delay Slot
+            DBGPRNT_EXIT();
+        }
+
+        void loadRegImm(int reg, int i, int line) {
+            if (i >= 0 && i <= 65535) {
+                ORI(reg, ZERO, i, line);
+            } else if (i < 0 && i > -32768) {
+                ADDIU(reg, ZERO, i, line);
+            } else {
+                LUI(reg, (i >> 16), line);
+                ORI(reg, reg, (i & 0xFFFF), line);
+            }
+        }
+
+        /* load immediate value to R0 */
+        virtual void li(int i) {
+            loadRegImm(MIPS_INT_REG, i, __LINE__);
+            setR0Type(mkpInt);
+        }
+
+        /* Load floating point value from global address. */
+        virtual void loadFloat(int address, Type* pType) {
+            DBGPRNT_ENTRY();
+            setR0Type(pType);
+
+            switch (pType->tag) {
+                case TY_FLOAT:
+                    loadRegImm(MIPS_INT_TMPREG, address, __LINE__);
+#ifdef MIPS_USE_HARDFLOAT
+                    LWC1(MIPS_FLOAT_REG, 0, MIPS_INT_TMPREG, __LINE__);
+#else
+                    LW(MIPS_INT_REG, 0, MIPS_INT_TMPREG, __LINE__);
+#endif
+                    break;
+                case TY_DOUBLE:
+                    loadRegImm(MIPS_INT_TMPREG, address, __LINE__);
+#ifdef MIPS_USE_HARDFLOAT
+                    LDC1(MIPS_FLOAT_REG, 0, MIPS_INT_TMPREG, __LINE__);
+#else
+                    LDDBL(MIPS_INT_REG, 0, MIPS_INT_TMPREG, __LINE__);
+#endif
+                    break;
+                default:
+                    assert(false);
+                    break;
+            }
+            DBGPRNT_EXIT();
+        }
+
+        /* Add the struct offset in bytes to R0, change the type to pType */
+        virtual void addStructOffsetR0(int offset, Type* pType){
+            DBGPRNT_ENTRY();
+            if (offset) {
+                ADDIU(MIPS_INT_REG, MIPS_INT_REG, offset, __LINE__);
+            }
+            setR0Type(pType, ET_LVALUE);
+            DBGPRNT_EXIT();
+        }
+
+        /* Jump to a target, and return the address of the word that
+         * holds the target data, in case it needs to be fixed up later.
+         */
+        virtual int gjmp(int t){
+            DBGPRNT_ENTRY();
+
+            int pc = getPC();
+            BEQ(ZERO, ZERO, encodeAddress(t), __LINE__);
+            NOP(__LINE__);
+            
+            DBGPRNT_EXIT();
+            return pc;
+        }
+
+        /* Test R0 and jump to a target if the test succeeds.
+         * l = 0: je, l == 1: jne
+         * Return the address of the word that holds the target data, in
+         * case it needs to be fixed up later.
+         */
+        virtual int gtst(bool l, int t){
+            DBGPRNT_ENTRY();
+            int pc = 0xDEADBEEF;
+            Type* pR0Type = getR0Type();
+            TypeTag tagR0 = pR0Type->tag;
+            t = encodeAddress(t);
+            switch(tagR0) {
+                case TY_FLOAT:
+#ifdef MIPS_USE_HARDFLOAT
+                    MTC1(ZERO, MIPS_FLOAT_TMPREG, __LINE__);
+                    C_EQ_S(MIPS_FLOAT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+                    pc = getPC();
+                    if (l) BC1F(t, __LINE__); else BC1T(t, __LINE__);
+#else
+                    MOV(A0, MIPS_INT_REG, __LINE__);
+                    callRuntime((void*) runtime_is_non_zero_f);
+                    pc = getPC();
+                    if (l) {
+                        BNE(MIPS_INT_REG, ZERO, t, __LINE__);
+                    } else {
+                        BEQ(MIPS_INT_REG, ZERO, t, __LINE__);
+                    }
+#endif
+                    break;
+                case TY_DOUBLE:
+#ifdef MIPS_USE_HARDFLOAT
+                    MTC1(ZERO, MIPS_FLOAT_TMPREG, __LINE__);
+                    MTC1(ZERO, MIPS_FLOAT_TMPREG2, __LINE__);
+                    C_EQ_D(MIPS_FLOAT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+                    pc = getPC();
+                    if (l) BC1F(t, __LINE__); else BC1T(t, __LINE__);
+#else
+                    MOVDBL(A0, MIPS_INT_REG, __LINE__);
+                    callRuntime((void*) runtime_is_non_zero_d);
+                    pc = getPC();
+                    if (l) {
+                        BNE(MIPS_INT_REG, ZERO, t, __LINE__);
+                    } else {
+                        BEQ(MIPS_INT_REG, ZERO, t, __LINE__);
+                    }
+#endif
+                    break;
+                default:
+                    pc = getPC();
+                    if (l) {
+                        BNE(MIPS_INT_REG, ZERO, t, __LINE__);
+                    } else {
+                        BEQ(MIPS_INT_REG, ZERO, t, __LINE__);
+                    }
+                    break;
+                }
+
+                NOP(__LINE__);    // Branch Delay Slot
+
+                DBGPRNT_EXIT();
+                return pc;
+            }
+
+#define    FP_JUMP_NEXT_2_INS    0x2
+
+        /* Compare TOS against R0, and store the boolean result in R0.
+         * Pops TOS.
+         * op specifies the comparison.
+         */
+        virtual void gcmp(int op){
+            DBGPRNT_ENTRY();
+            Type* pR0Type = getR0Type();
+            Type* pTOSType = getTOSType();
+            TypeTag tagR0 = collapseType(pR0Type->tag);
+            TypeTag tagTOS = collapseType(pTOSType->tag);
+
+            if (tagR0 == TY_INT && tagTOS == TY_INT) {
+                setupIntPtrArgs();
+
+                switch(op) {
+                case OP_EQUALS:
+                    XOR(MIPS_INT_REG, MIPS_INT_REG, MIPS_INT_REG_STACK, __LINE__);
+                    SLTIU(MIPS_INT_REG, MIPS_INT_REG, 0x1, __LINE__);
+                    break;
+                case OP_NOT_EQUALS:
+                    XOR(MIPS_INT_REG, MIPS_INT_REG, MIPS_INT_REG_STACK, __LINE__);
+                    SLTU(MIPS_INT_REG, ZERO, MIPS_INT_REG, __LINE__);
+                    break;
+                case OP_LESS_EQUAL:
+                    SLT(MIPS_INT_REG, MIPS_INT_REG, MIPS_INT_REG_STACK, __LINE__);
+                    XORI(MIPS_INT_REG, MIPS_INT_REG, 0x1, __LINE__);
+                    break;
+                case OP_GREATER:
+                    SLT(MIPS_INT_REG, MIPS_INT_REG, MIPS_INT_REG_STACK, __LINE__);
+                    break;
+                case OP_GREATER_EQUAL:
+                    SLT(MIPS_INT_REG, MIPS_INT_REG_STACK, MIPS_INT_REG, __LINE__);    //slt     $2,$3,$2
+                    XORI(MIPS_INT_REG, MIPS_INT_REG, 0x1, __LINE__);        // xori    $2,$2,0x1
+                    break;
+                case OP_LESS:
+                    SLT(MIPS_INT_REG, MIPS_INT_REG_STACK, MIPS_INT_REG, __LINE__);    //slt     $2,$3,$2
+                    break;
+                default:
+                    error("Unknown comparison op %d", op);
+                    break;
+                }
+            } else if (tagR0 == TY_DOUBLE || tagTOS == TY_DOUBLE) {
+                setupDoubleArgs();
+
+#ifdef MIPS_USE_HARDFLOAT
+                loadRegImm(MIPS_INT_REG, 0x1, __LINE__);
+                if (op == OP_EQUALS || op == OP_NOT_EQUALS)
+                    C_EQ_D(MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+                else if (op == OP_LESS_EQUAL || op == OP_GREATER)
+                    C_LE_D(MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+                else if (op == OP_LESS || op == OP_GREATER_EQUAL)
+                    C_LT_D(MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+                else
+                    error("Unknown comparison op %d", op);
+                MIPS_III_NOP_AFTER_FLOAT_CMP(__LINE__);
+                if (op == OP_NOT_EQUALS || op == OP_GREATER || op == OP_GREATER_EQUAL) BC1F(FP_JUMP_NEXT_2_INS, __LINE__);
+                else BC1T(FP_JUMP_NEXT_2_INS, __LINE__);
+                NOP(__LINE__);    //delay slot
+                MOV(MIPS_INT_REG, ZERO, __LINE__);
+#else
+                switch(op) {
+                    case OP_EQUALS:
+                        callRuntime((void*) runtime_cmp_eq_dd);
+                        break;
+                    case OP_NOT_EQUALS:
+                        callRuntime((void*) runtime_cmp_ne_dd);
+                        break;
+                    case OP_LESS_EQUAL:
+                        callRuntime((void*) runtime_cmp_le_dd);
+                        break;
+                    case OP_GREATER:
+                        callRuntime((void*) runtime_cmp_gt_dd);
+                        break;
+                    case OP_GREATER_EQUAL:
+                        callRuntime((void*) runtime_cmp_ge_dd);
+                        break;
+                    case OP_LESS:
+                        callRuntime((void*) runtime_cmp_lt_dd);
+                        break;
+                    default:
+                        error("Unknown comparison op %d", op);
+                        break;
+                }
+#endif
+            } else {
+                setupFloatArgs();
+#ifdef MIPS_USE_HARDFLOAT
+
+                loadRegImm(MIPS_INT_REG, 0x1, __LINE__);
+                if (op == OP_EQUALS || op == OP_NOT_EQUALS)
+                    C_EQ_S(MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+                else if (op == OP_LESS_EQUAL || op == OP_GREATER)
+                    C_LE_S(MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+                else if (op == OP_LESS || op == OP_GREATER_EQUAL)
+                    C_LT_S(MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+                else
+                    error("Unknown comparison op %d", op);
+                MIPS_III_NOP_AFTER_FLOAT_CMP(__LINE__);
+                if (op == OP_NOT_EQUALS || op == OP_GREATER || op == OP_GREATER_EQUAL) BC1F(FP_JUMP_NEXT_2_INS, __LINE__);
+                    else BC1T(FP_JUMP_NEXT_2_INS, __LINE__);
+                NOP(__LINE__);    //delay slot
+                MOV(MIPS_INT_REG, ZERO, __LINE__);
+
+#else
+                switch(op) {
+                    case OP_EQUALS:
+                        callRuntime((void*) runtime_cmp_eq_ff);
+                        break;
+                    case OP_NOT_EQUALS:
+                        callRuntime((void*) runtime_cmp_ne_ff);
+                        break;
+                    case OP_LESS_EQUAL:
+                        callRuntime((void*) runtime_cmp_le_ff);
+                        break;
+                    case OP_GREATER:
+                        callRuntime((void*) runtime_cmp_gt_ff);
+                        break;
+                    case OP_GREATER_EQUAL:
+                        callRuntime((void*) runtime_cmp_ge_ff);
+                        break;
+                    case OP_LESS:
+                        callRuntime((void*) runtime_cmp_lt_ff);
+                        break;
+                    default:
+                        error("Unknown comparison op %d", op);
+                        break;
+                }
+#endif
+            }
+            setR0Type(mkpInt);
+            DBGPRNT_EXIT();
+        }
+
+
+
+
+        /* Perform the arithmetic op specified by op. TOS is the
+         * left argument, R0 is the right argument.
+         * Pops TOS.
+         */
+        virtual void genOp(int op){
+            DBGPRNT_ENTRY();
+            Type* pR0Type = getR0Type();
+            Type* pTOSType = getTOSType();
+            TypeTag tagR0 = pR0Type->tag;
+            TypeTag tagTOS = pTOSType->tag;
+            bool isFloatR0 = isFloatTag(tagR0);
+            bool isFloatTOS = isFloatTag(tagTOS);
+            if (!isFloatR0 && !isFloatTOS) {
+                setupIntPtrArgs();
+                bool isPtrR0 = isPointerTag(tagR0);
+                bool isPtrTOS = isPointerTag(tagTOS);
+
+                if (isPtrR0 || isPtrTOS) {
+                    if (isPtrR0 && isPtrTOS) {
+                        if (op != OP_MINUS) {
+                            error("Unsupported pointer-pointer operation %d.", op);
+                        }
+                        if (! typeEqual(pR0Type, pTOSType)) {
+                            error("Incompatible pointer types for subtraction.");
+                        }
+                        SUBU(MIPS_INT_REG, MIPS_INT_REG_STACK, MIPS_INT_REG, __LINE__);
+                        setR0Type(mkpInt);
+                        int size = sizeOf(pR0Type->pHead);
+                        if (size != 1) {
+                            pushR0();
+                            li(size);
+                            genOp(OP_DIV);
+                        }
+                    } else { // ONE OF THE VALS IS A POINTER
+                        if (! (op == OP_PLUS || (op == OP_MINUS && isPtrR0))) {
+                            error("Unsupported pointer-scalar operation %d", op);
+                        }
+                        Type* pPtrType = getPointerArithmeticResultType(
+                                pR0Type, pTOSType);
+                        int size = sizeOf(pPtrType->pHead);
+                        if (size != 1) {
+                            loadRegImm(MIPS_INT_TMPREG, size, __LINE__);
+                            if (isPtrR0) {
+                                MUL(MIPS_INT_REG_STACK, MIPS_INT_TMPREG, MIPS_INT_REG_STACK, __LINE__);
+                            } else {
+                                MUL(MIPS_INT_REG, MIPS_INT_TMPREG, MIPS_INT_REG, __LINE__);
+                            }
+                        }
+                        switch(op) {
+                            case OP_PLUS:
+                                ADDU(MIPS_INT_REG, MIPS_INT_REG_STACK, MIPS_INT_REG, __LINE__);
+                            break;
+                            case OP_MINUS:
+                                SUBU(MIPS_INT_REG, MIPS_INT_REG_STACK, MIPS_INT_REG, __LINE__);
+                            break;
+                        }
+                        setR0Type(pPtrType);
+                    }
+                } else { /* Neither is a pointer! */
+                    switch(op) {
+                        case OP_MUL:
+                        MUL(MIPS_INT_REG, MIPS_INT_REG_STACK, MIPS_INT_REG, __LINE__);
+                        break;
+                        case OP_DIV:
+                        DIVU(MIPS_INT_REG, MIPS_INT_REG_STACK, __LINE__);
+                        MFLO(MIPS_INT_REG, __LINE__);
+                        break;
+                        case OP_MOD:
+                        DIVU(MIPS_INT_REG, MIPS_INT_REG_STACK, __LINE__);
+                        MFHI(MIPS_INT_REG, __LINE__);
+                        break;
+                        case OP_PLUS:
+                        ADDU(MIPS_INT_REG, MIPS_INT_REG_STACK, MIPS_INT_REG, __LINE__);
+                        break;
+                        case OP_MINUS:
+                        SUBU(MIPS_INT_REG, MIPS_INT_REG_STACK, MIPS_INT_REG, __LINE__);
+                        break;
+                        case OP_SHIFT_LEFT:
+                        SLLV(MIPS_INT_REG, MIPS_INT_REG_STACK, MIPS_INT_REG, __LINE__);
+                        break;
+                        case OP_SHIFT_RIGHT:
+                        SRLV(MIPS_INT_REG, MIPS_INT_REG_STACK, MIPS_INT_REG, __LINE__);
+                        break;
+                        case OP_BIT_AND:
+                        AND(MIPS_INT_REG, MIPS_INT_REG_STACK, MIPS_INT_REG, __LINE__);
+                        break;
+                        case OP_BIT_XOR:
+                        XOR(MIPS_INT_REG, MIPS_INT_REG_STACK, MIPS_INT_REG, __LINE__);
+                        break;
+                        case OP_BIT_OR:
+                        OR(MIPS_INT_REG, MIPS_INT_REG_STACK, MIPS_INT_REG, __LINE__);
+                        break;
+                        case OP_BIT_NOT:
+                        NOR(MIPS_INT_REG, MIPS_INT_REG, ZERO, __LINE__);
+                        break;
+                        default:
+                        error("Unimplemented op %d\n", op);
+                        break;
+                    }
+                }
+            } else {    /* One or both are floats/Doubles */
+                Type* pResultType = tagR0 > tagTOS ? pR0Type : pTOSType;
+                if (pResultType->tag == TY_DOUBLE) {
+                    setupDoubleArgs();
+
+                    switch(op) {
+                    case OP_MUL:
+#ifdef MIPS_USE_HARDFLOAT
+                        MUL_D(MIPS_FLOAT_REG, MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+#else
+                        callRuntime((void*) runtime_op_mul_dd);
+#endif
+                        break;
+                    case OP_DIV:
+#ifdef MIPS_USE_HARDFLOAT
+                        DIV_D(MIPS_FLOAT_REG, MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+#else
+                        callRuntime((void*) runtime_op_div_dd);
+#endif
+                        break;
+                    case OP_PLUS:
+#ifdef MIPS_USE_HARDFLOAT
+                        ADD_D(MIPS_FLOAT_REG, MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+#else
+                        callRuntime((void*) runtime_op_add_dd);
+#endif
+                        break;
+                    case OP_MINUS:
+#ifdef MIPS_USE_HARDFLOAT
+                        SUB_D(MIPS_FLOAT_REG, MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+#else
+                        callRuntime((void*) runtime_op_sub_dd);
+#endif
+                        break;
+                    default:
+                        error("Unsupported binary floating operation %d\n", op);
+                        break;
+                    }
+                } else { /* Float type */
+                    setupFloatArgs();
+                    switch(op) {
+                    case OP_MUL:
+#ifdef MIPS_USE_HARDFLOAT
+                        MUL_S(MIPS_FLOAT_REG, MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+#else
+                        callRuntime((void*) runtime_op_mul_ff);
+#endif
+                        break;
+                    case OP_DIV:
+#ifdef MIPS_USE_HARDFLOAT
+                        DIV_S(MIPS_FLOAT_REG, MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+#else
+                        callRuntime((void*) runtime_op_div_ff);
+#endif
+                        break;
+                    case OP_PLUS:
+#ifdef MIPS_USE_HARDFLOAT
+                        ADD_S(MIPS_FLOAT_REG, MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+#else
+                        callRuntime((void*) runtime_op_add_ff);
+#endif
+                        break;
+                    case OP_MINUS:
+#ifdef MIPS_USE_HARDFLOAT
+                        SUB_S(MIPS_FLOAT_REG, MIPS_FLOAT_REG_STACK, MIPS_FLOAT_REG, __LINE__);
+#else
+                        callRuntime((void*) runtime_op_sub_ff);
+#endif
+                        break;
+                    default:
+                        error("Unsupported binary floating operation %d\n", op);
+                        break;
+                    }
+                }
+                setR0Type(pResultType);
+            }
+            DBGPRNT_EXIT();
+        }
+
+
+        /* Compare 0 against R0, and store the boolean result in R0.
+         * op specifies the comparison.
+         */
+        virtual void gUnaryCmp(int op){
+            DBGPRNT_ENTRY();
+            if (op != OP_LOGICAL_NOT) {
+                error("Unknown unary cmp %d", op);
+            } else {
+                Type* pR0Type = getR0Type();
+                TypeTag tag = collapseType(pR0Type->tag);
+                switch(tag) {
+                    case TY_INT:
+                        SLTIU(MIPS_INT_REG, MIPS_INT_REG, 0x1, __LINE__);
+                        break;
+                    case TY_FLOAT:
+#ifdef MIPS_USE_HARDFLOAT
+                        loadRegImm(MIPS_INT_REG, 0x1, __LINE__);
+                        MTC1(ZERO, MIPS_FLOAT_TMPREG, __LINE__);
+                        C_EQ_S(MIPS_FLOAT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+                        MIPS_III_NOP_AFTER_FLOAT_CMP(__LINE__);
+                        BC1T(FP_JUMP_NEXT_2_INS, __LINE__);
+                        NOP(__LINE__);    //delay slot
+                        MOV(MIPS_INT_REG, ZERO, __LINE__);
+#else
+                        MOV(A0, MIPS_INT_REG, __LINE__);
+                        callRuntime((void*) runtime_is_zero_f);
+#endif
+                        break;
+                    case TY_DOUBLE:
+#ifdef MIPS_USE_HARDFLOAT
+                        loadRegImm(MIPS_INT_REG, 0x1, __LINE__);
+                        MTC1(ZERO, MIPS_FLOAT_TMPREG, __LINE__);
+                        MTC1(ZERO, MIPS_FLOAT_TMPREG2, __LINE__);
+                        
+                        C_EQ_D(MIPS_FLOAT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+                        MIPS_III_NOP_AFTER_FLOAT_CMP(__LINE__);
+                        BC1T(FP_JUMP_NEXT_2_INS, __LINE__);
+                        NOP(__LINE__);    //delay slot
+                        MOV(MIPS_INT_REG, ZERO, __LINE__);
+#else
+                        MOVDBL(A0, MIPS_INT_REG, __LINE__);
+                        callRuntime((void*) runtime_is_zero_d);
+#endif
+                        break;
+                    default:
+                        error("gUnaryCmp unsupported type");
+                        break;
+                }
+            }
+            setR0Type(mkpInt);
+            DBGPRNT_EXIT();
+        }
+
+
+        /* Perform the arithmetic op specified by op. 0 is the
+         * left argument, R0 is the right argument.
+         */
+        virtual void genUnaryOp(int op){
+            DBGPRNT_ENTRY();
+            Type* pR0Type = getR0Type();
+            TypeTag tag = collapseType(pR0Type->tag);
+            switch(tag) {
+                case TY_INT:
+                    switch(op) {
+                    case OP_MINUS:
+                        SUBU(MIPS_INT_REG, ZERO, MIPS_INT_REG, __LINE__);
+                        break;
+                    case OP_BIT_NOT:
+                        NOR(MIPS_INT_REG, MIPS_INT_REG, ZERO, __LINE__);
+                        break;
+                    default:
+                        error("Unknown unary op %d\n", op);
+                        break;
+                    }
+                    break;
+                case TY_FLOAT:
+                case TY_DOUBLE:
+                    switch (op) {
+                        case OP_MINUS:
+                            if (tag == TY_FLOAT) {
+#ifdef MIPS_USE_HARDFLOAT
+                                MTC1(ZERO, MIPS_FLOAT_TMPREG, __LINE__);
+                                SUB_S(MIPS_FLOAT_REG, MIPS_FLOAT_TMPREG, MIPS_FLOAT_REG, __LINE__);
+#else
+                                MOVDBL(A0, MIPS_INT_REG, __LINE__);
+                                callRuntime((void*) runtime_op_neg_f);
+#endif
+                            } else {
+#ifdef MIPS_USE_HARDFLOAT
+                                MTC1(ZERO, MIPS_FLOAT_TMPREG, __LINE__);
+                                MTC1(ZERO, MIPS_FLOAT_TMPREG2, __LINE__);
+                                SUB_D(MIPS_FLOAT_REG, MIPS_FLOAT_TMPREG, MIPS_FLOAT_REG, __LINE__);
+#else
+                                MOVDBL(A0, MIPS_INT_REG, __LINE__);
+                                callRuntime((void*) runtime_op_neg_d);
+#endif
+                            }
+                            break;
+                        case OP_BIT_NOT:
+                            error("Can't apply '~' operator to a float or double.");
+                            break;
+                        default:
+                            error("Unknown unary op %d\n", op);
+                            break;
+                        }
+                    break;
+                default:
+                    error("genUnaryOp unsupported type");
+                    break;
+            }
+            DBGPRNT_EXIT();
+        }
+
+        /* Push R0 onto the stack. (Also known as "dup" for duplicate.)
+         */
+        virtual void pushR0() {
+            DBGPRNT_ENTRY();
+            Type* pR0Type = getR0Type();
+            TypeTag r0ct = collapseType(pR0Type->tag);
+
+            incStack((r0ct == TY_DOUBLE) ? 8 : 4, __LINE__);
+
+            switch (r0ct ) {
+            case TY_DOUBLE:
+#ifdef MIPS_USE_HARDFLOAT
+                /* Insert a pad - if unaligned */
+                if (finalStackSize % STACK_ALIGNMENT)
+                    setStackPad(finalStackSize, STACK_ALIGNMENT - (finalStackSize % STACK_ALIGNMENT), __LINE__);
+
+                SDC1(MIPS_FLOAT_REG, 0, SP, __LINE__);
+#else
+                SWDBL(MIPS_INT_REG, 0, SP, __LINE__);
+#endif
+                break;
+            case TY_FLOAT:
+#ifdef MIPS_USE_HARDFLOAT
+                SWC1(MIPS_FLOAT_REG, 0, SP, __LINE__);
+                break;
+#endif
+            default:
+                SW(MIPS_INT_REG, 0, SP, __LINE__);
+                break;
+            }
+
+            pushType();
+            DBGPRNT_EXIT();
+        }
+
+        /* Turn R0, TOS into R0 TOS R0 */
+        virtual void over(){
+            DBGPRNT_ENTRY();
+
+            Type* pR0Type = getR0Type();
+            TypeTag r0ct = collapseType(pR0Type->tag);
+
+            Type* pTOSType = getTOSType();
+            TypeTag tosct = collapseType(pTOSType->tag);
+
+            // We know it's only used for int-ptr ops (++/--)
+            assert (r0ct == TY_INT  && tosct == TY_INT);
+
+            incStack(4, __LINE__);
+            LW(MIPS_INT_TMPREG, 4, SP, __LINE__);
+            SW(MIPS_INT_REG, 4, SP, __LINE__);
+            SW(MIPS_INT_TMPREG, 0, SP, __LINE__);
+
+            overType();
+            DBGPRNT_EXIT();
+        }
+
+        /* Pop R0 from the stack. (Also known as "drop")
+         */
+        virtual void popR0(){
+            DBGPRNT_ENTRY();
+            Type* pTOSType = getTOSType();
+            TypeTag tosct = collapseType(pTOSType->tag);
+#ifdef MIPS_USE_HARDFLOAT
+            if (tosct == TY_FLOAT || tosct == TY_DOUBLE) {
+                error("Unsupported popR0 float/double");
+            }
+#endif
+            switch (tosct){
+                case TY_INT:
+                case TY_FLOAT:
+                    LW(MIPS_INT_REG, 0, SP, __LINE__);
+                    decStack(4, __LINE__);
+                    break;
+#ifndef MIPS_USE_HARDFLOAT
+                case TY_DOUBLE:
+                    LDDBL(MIPS_INT_REG, 0, SP, __LINE__);
+                    decStack(8, __LINE__);
+                    break;
+#endif
+                default:
+                    error("Can't pop this type.");
+                    break;
+            }
+            popType();
+            DBGPRNT_EXIT();
+        }
+
+        /* Store R0 to the address stored in TOS.
+         * The TOS is popped.
+         */
+        virtual void storeR0ToTOS(){
+            DBGPRNT_ENTRY();
+
+            Type* pPointerType = getTOSType();
+            assert(pPointerType->tag == TY_POINTER);
+            Type* pDestType = pPointerType->pHead;
+            convertR0(pDestType);
+
+            // Load address on top of stack into reg stack
+            LW(MIPS_INT_TMPREG, 0, SP, __LINE__);
+            decStack(4, __LINE__);
+            popType();
+
+            switch (pDestType->tag) {
+                case TY_POINTER:
+                case TY_INT:
+                    SW(MIPS_INT_REG, 0, MIPS_INT_TMPREG, __LINE__);
+                    break;
+                case TY_FLOAT:
+#ifdef MIPS_USE_HARDFLOAT
+                    SWC1(MIPS_FLOAT_REG, 0, MIPS_INT_TMPREG, __LINE__);
+#else
+                    SW(MIPS_INT_REG, 0, MIPS_INT_TMPREG, __LINE__);
+#endif
+                    break;
+                case TY_SHORT:
+                    SH(MIPS_INT_REG, 0, MIPS_INT_TMPREG, __LINE__);
+                    break;
+                case TY_CHAR:
+                    SB(MIPS_INT_REG, 0, MIPS_INT_TMPREG, __LINE__);
+                    break;
+                case TY_DOUBLE:
+#ifdef MIPS_USE_HARDFLOAT
+                    SDC1(MIPS_FLOAT_REG, 0, MIPS_INT_TMPREG, __LINE__);
+#else
+                    SWDBL(MIPS_INT_REG, 0, MIPS_INT_TMPREG, __LINE__);
+#endif
+                    break;
+                case TY_STRUCT:
+                {
+                    int size = sizeOf(pDestType);
+                    if (size > 0) {
+                        MOV(A0, MIPS_INT_REG, __LINE__);
+                        loadRegImm(A1, size, __LINE__);
+                        MOV(A2, MIPS_INT_TMPREG, __LINE__);
+                        callRuntime((void*) runtime_structCopy);
+                    }
+                }
+                    break;
+                default:
+                    error("storeR0ToTOS: unimplemented type %d",
+                            pDestType->tag);
+                    break;
+            }
+            setR0Type(pDestType);
+            DBGPRNT_EXIT();
+        }
+
+        /* Load R0 from the address stored in R0.
+         */
+        virtual void loadR0FromR0(){
+            DBGPRNT_ENTRY();
+            Type* pPointerType = getR0Type();
+            assert(pPointerType->tag == TY_POINTER);
+            Type* pNewType = pPointerType->pHead;
+            TypeTag tag = pNewType->tag;
+            switch (tag) {
+                case TY_POINTER:
+                case TY_INT:
+                    LW(MIPS_INT_REG, 0, MIPS_INT_REG, __LINE__);
+                    break;
+                case TY_FLOAT:
+#ifdef MIPS_USE_HARDFLOAT
+                    LWC1(MIPS_FLOAT_REG, 0, MIPS_INT_REG, __LINE__);
+#else
+                    LW(MIPS_INT_REG, 0, MIPS_INT_REG, __LINE__);
+#endif
+                    break;
+                case TY_SHORT:
+                    LH(MIPS_INT_REG, 0, MIPS_INT_REG, __LINE__);
+                    break;
+                case TY_CHAR:
+                    LB(MIPS_INT_REG, 0, MIPS_INT_REG, __LINE__);
+                    break;
+                case TY_DOUBLE:
+#ifdef MIPS_USE_HARDFLOAT
+                    LDC1(MIPS_FLOAT_REG, 0, MIPS_INT_REG, __LINE__);
+#else
+                    MOV(MIPS_INT_TMPREG, MIPS_INT_REG, __LINE__);
+                    LDDBL(MIPS_INT_REG, 0, MIPS_INT_TMPREG, __LINE__);
+#endif
+                    break;
+                case TY_ARRAY:
+                    pNewType = pNewType->pTail;
+                    break;
+                case TY_STRUCT:
+                    break;
+                default:
+                    error("loadR0FromR0: unimplemented type %d", tag);
+                    break;
+            }
+            setR0Type(pNewType);
+            DBGPRNT_EXIT();
+        }
+
+        /* Load the absolute address of a variable to R0.
+         * If ea <= LOCAL, then this is a local variable, or an
+         * argument, addressed relative to FP.
+         * else it is an absolute global address.
+         *
+         * et is ET_RVALUE for things like string constants, ET_LVALUE for
+         * variables.
+         */
+        virtual void leaR0(int ea, Type* pPointerType, ExpressionType et){
+            DBGPRNT_ENTRY();
+            if (ea > -LOCAL && ea < LOCAL) {
+                // Local, fp relative
+
+                size_t immediate = 0;
+                bool inRange = false;
+                
+                // Arguments require absolute value of EA (below the FP in addr)
+                if (ea < 0) { // These are local vars
+                    ADDIU(MIPS_INT_REG, MIPS_INT_FP, ea, __LINE__);
+                } else {
+                    // These are arguments (higher addr than FP)
+                    ADDIU(MIPS_INT_REG, MIPS_INT_FP, ea + FUNC_SAVED_REGS_SIZE - 8, __LINE__);
+                }
+
+            } else {
+                loadRegImm(MIPS_INT_REG, ea, __LINE__);
+            }
+            setR0Type(pPointerType, et);
+            DBGPRNT_EXIT();
+        }
+
+        /* Load the pc-relative address of a forward-referenced variable to R0.
+         * Return the address of the 4-byte constant so that it can be filled
+         * in later.
+         */
+        virtual int leaForward(int ea, Type* pPointerType){
+            DBGPRNT_ENTRY();
+
+            setR0Type(pPointerType);
+            int result = ea;
+            int pc = getPC();
+            int offset = 0;
+            if (ea) {
+                offset = (pc - ea - 8) >> 2;
+                if ((offset & 0xffff) != offset) {
+                    error("function forward reference out of bounds");
+                }
+
+                /* Load this into R0 */
+                ADDIU(MIPS_INT_REG, ZERO, offset, __LINE__);
+
+            } else {
+                offset = 0;
+
+                BEQ(ZERO, ZERO, 0x2, __LINE__);    // Jump over next 2 instructions
+                NOP(__LINE__);
+                result = getPC();
+                o4(ea);
+                loadRegImm(MIPS_INT_REG, result, __LINE__);
+                LW(MIPS_INT_REG, 0, MIPS_INT_REG, __LINE__);
+            }
+            DBGPRNT_EXIT();
+            return result;
+        }
+
+        /**
+         * Convert R0 to the given type.
+         */
+        virtual void convertR0Imp(Type* pType, bool isCast){
+            DBGPRNT_ENTRY();
+            Type* pR0Type = getR0Type();
+            if (isPointerType(pType) && isPointerType(pR0Type)) {
+                Type* pA = pR0Type;
+                Type* pB = pType;
+                // Array decays to pointer
+                if (pA->tag == TY_ARRAY && pB->tag == TY_POINTER) {
+                    pA = pA->pTail;
+                }
+                if (! (typeEqual(pA, pB)
+                        || pB->pHead->tag == TY_VOID
+                        || (pA->tag == TY_POINTER && pB->tag == TY_POINTER && isCast)
+                    )) {
+                    error("Incompatible pointer or array types");
+                }
+            } else if (bitsSame(pType, pR0Type)) {
+                // do nothing special
+                if (pR0Type->tag == TY_INT) {
+                    if (pType->tag == TY_CHAR) {
+
+                    }
+                }
+            } else {
+                TypeTag r0Tag = collapseType(pR0Type->tag);
+                TypeTag destTag = collapseType(pType->tag);
+                if (r0Tag == TY_INT) {
+                    if (destTag == TY_FLOAT) {
+#ifdef MIPS_USE_HARDFLOAT
+                        MTC1(MIPS_INT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+                        CVT_S_W(MIPS_FLOAT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+#else
+                        MOV(A0, MIPS_INT_REG, __LINE__);
+                        callRuntime((void*) runtime_int_to_float);
+#endif
+                    } else {
+                        assert(destTag == TY_DOUBLE);
+#ifdef MIPS_USE_HARDFLOAT
+                        MTC1(MIPS_INT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+                        CVT_D_W(MIPS_FLOAT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+#else
+                        MOV(A0, MIPS_INT_REG, __LINE__);
+                        callRuntime((void*) runtime_int_to_double);
+#endif
+                    }
+                } else if (r0Tag == TY_FLOAT) {
+                    if (destTag == TY_INT) {
+#ifdef MIPS_USE_HARDFLOAT
+                        TRUNC_W_S(MIPS_FLOAT_TMPREG, MIPS_FLOAT_REG, __LINE__);
+                        MFC1(MIPS_INT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+#else
+                        MOV(A0, MIPS_INT_REG, __LINE__);
+                        callRuntime((void*) runtime_float_to_int);
+#endif
+                    } else {
+                        assert(destTag == TY_DOUBLE);
+#ifdef MIPS_USE_HARDFLOAT
+                        CVT_D_S(MIPS_FLOAT_REG, MIPS_FLOAT_REG, __LINE__);
+#else
+                        MOV(A0, MIPS_INT_REG, __LINE__);
+                        callRuntime((void*) runtime_float_to_double);
+#endif
+                    }
+                } else {
+                    if (r0Tag == TY_DOUBLE) {
+                        if (destTag == TY_INT) {
+#ifdef MIPS_USE_HARDFLOAT
+                            TRUNC_W_D(MIPS_FLOAT_TMPREG, MIPS_FLOAT_REG, __LINE__);
+                            MFC1(MIPS_INT_REG, MIPS_FLOAT_TMPREG, __LINE__);
+#else
+                            MOVDBL(A0, MIPS_INT_REG, __LINE__);
+                            callRuntime((void*) runtime_double_to_int);
+#endif
+                        } else {
+                            if(destTag == TY_FLOAT) {
+#ifdef MIPS_USE_HARDFLOAT
+                                CVT_S_D(MIPS_FLOAT_REG, MIPS_FLOAT_REG, __LINE__);
+#else
+                                MOVDBL(A0, MIPS_INT_REG, __LINE__);
+                                callRuntime((void*) runtime_double_to_float);
+#endif
+                            } else {
+                                incompatibleTypes(pR0Type, pType);
+                            }
+                        }
+                    } else {
+                        incompatibleTypes(pR0Type, pType);
+                    }
+                }
+            }
+            setR0Type(pType);
+            DBGPRNT_EXIT();
+        }
+
+
+        /* MIPS has 26 bits in jump instruction, but even BRANCHES need to be patched, so just 16 bits...
+         * (Since we bit shift the jump address by 2, that makes it 2^18 locations */
+#define        BRANCH_REL_ADDRESS_MASK        0x0000FFFF
+
+        /* Emit code to adjust the stack for a function call. Return the
+         * label for the address of the instruction that adjusts the
+         * stack size. This will be passed as argument "a" to
+         * endFunctionCallArguments.
+         */
+        virtual int beginFunctionCallArguments(){
+            DBGPRNT_ENTRY();
+
+            /* Everything AFTER begin, is a new stack counter */
+            pushStackCounter();
+
+            int pc = getPC();
+            /* Instruction will be patched */
+            incStack(0, __LINE__);
+
+            DBGPRNT_EXIT();
+            return pc;
+        }
+
+        int generateArgCode(int maxargs, Type *pDecl)
+        {
+            int i;
+#ifdef    MIPS_USE_HARDFLOAT
+            int argtypes[4];
+            Type* pArgList = pDecl->pTail;
+            Type* tmpList = pArgList;
+
+            argtypes[0] = argtypes[1] = argtypes[2] = argtypes[3] = TY_UNKNOWN;
+
+            for (i = 0; tmpList && (i < 4); i++) {
+                argtypes[i] = tmpList->pHead->tag;
+                tmpList = tmpList->pTail;
+            }
+
+            int n = i;
+
+            if (n == 0) {
+                /* Handles Variable argument list - like printf - which have
+                 * no prototype */
+                for (i = 0; i < maxargs; i++) {
+                     LW(A0 + i, i*4, SP, __LINE__);
+                }
+                return 0;
+            }
+
+            /* First Arg is always fixed */
+            switch (argtypes[0]) {
+                case TY_FLOAT:
+                    LWC1(F12, 0, SP, __LINE__);
+                    if (n == 1)
+                        break;
+                    
+                    switch (argtypes[1]) {
+                        case TY_DOUBLE:
+                            LDC1(F14, 8, SP, __LINE__);
+                            break;
+                        case TY_FLOAT:
+                            LWC1(F14, 4, SP, __LINE__);
+
+                            if (n > 2) {
+                                LW(A2,  8, SP, __LINE__);
+                                if (argtypes[2] == TY_DOUBLE || (n > 3 && argtypes[3] != TY_DOUBLE))
+                                    LW(A3,  12, SP, __LINE__);
+                            }
+                            break;
+                        case TY_INT:
+                        default:
+                            LW(A1,  4, SP, __LINE__);
+                            if (n > 2) {
+                                LW(A2,  8, SP, __LINE__);
+                                if (argtypes[2] == TY_DOUBLE || (n > 3 && argtypes[3] != TY_DOUBLE))
+                                    LW(A3,  12, SP, __LINE__);
+                            }
+                            break;
+                    }
+                    break;
+                case TY_DOUBLE:
+                    LDC1(F12, 0, SP, __LINE__);
+                    if (n == 1)
+                        break;
+
+                    switch (argtypes[1]) {
+                        case TY_DOUBLE:
+                            LDC1(F14, 8, SP, __LINE__);
+                            break;
+                        case TY_FLOAT:
+                            LWC1(F14,  8, SP, __LINE__);
+                            if (n > 2 && argtypes[2] != TY_DOUBLE)
+                                LW(A3, 12, SP, __LINE__);
+                            break;
+                        default:
+                        case TY_INT:
+                            LW(A2,  8, SP, __LINE__);
+                            if (n > 2 && argtypes[2] != TY_DOUBLE)
+                                LW(A3, 12, SP, __LINE__);
+                            break;
+                    }
+                    break;
+                case TY_INT:
+                default:
+                    LW(A0,  0, SP, __LINE__);
+                    if (n == 1)
+                        break;
+
+                    switch (argtypes[1]) {
+                        case TY_DOUBLE:
+                            LW(A2,  8, SP, __LINE__);
+                            LW(A3, 12, SP, __LINE__);
+                            break;
+                        default:
+                            LW(A1,  4, SP, __LINE__);
+                            if (n >= 2) {
+                                LW(A2,  8, SP, __LINE__);
+                                if (n >=3) {
+                                    if (argtypes[2] == TY_DOUBLE || ((n >= 4) && argtypes[3] != TY_DOUBLE))
+                                        LW(A3, 12, SP, __LINE__);
+                                }
+                            }
+                    }
+                    break;
+            }
+#else
+            for (i = 0; i < maxargs; i++) {
+               LW(A0 + i, i*4, SP, __LINE__);
+            }
+#endif
+            return 0;
+        }
+
+
+        /* Emit code to store R0 to the stack at byte offset l.
+         * Returns stack size of object (typically 4 or 8 bytes)
+         */
+        virtual size_t storeR0ToArg(int l, Type* pArgType){
+            int asize = 4;
+            DBGPRNT_ENTRY();
+
+            convertR0(pArgType);
+            Type* pR0Type = getR0Type();
+            TypeTag r0ct = collapseType(pR0Type->tag);
+
+            // Send args in the stack form - NOT registers, since this is VM convention
+            // Also children functions can be called to compute the values of arguments -
+            // so if you fill in registers, they WILL be garbled!
+            switch(r0ct) {
+                case TY_DOUBLE: {
+                    int pad = ((l + STACK_ALIGNMENT - 1) & ~(STACK_ALIGNMENT - 1)) - l;
+
+#ifdef    MIPS_USE_HARDFLOAT
+                    SDC1(MIPS_FLOAT_REG, l + pad, SP, __LINE__);
+#else
+                    SWDBL(MIPS_INT_REG, l + pad, SP, __LINE__);
+#endif
+                    asize = 8 + pad;
+                    break;
+                }
+                case TY_FLOAT:
+#ifdef    MIPS_USE_HARDFLOAT
+                    SWC1(MIPS_FLOAT_REG, l, SP, __LINE__);
+                    break;
+#else
+                    // Fall through
+#endif
+                default:
+                    SW(MIPS_INT_REG, l, SP, __LINE__);
+                    break;
+            }
+
+            DBGPRNT_EXIT();
+            return asize;
+        }
+
+        int stackAlignAdjustment;
+
+        /* Patch the function call preamble.
+         * a is the address returned from beginFunctionCallArguments
+         * l is the number of bytes the arguments took on the stack.
+         * Typically you would also emit code to convert the argument
+         * list into whatever the native function calling convention is.
+         * On ARM for example you would pop the first 5 arguments into
+         * R0..R4
+         */
+        virtual void endFunctionCallArguments(Type* pDecl, int a, int l){
+            DBGPRNT_ENTRY();
+
+            l = fixupArgLength(l);
+
+            stackAlignAdjustment = getStackAlignment();
+
+            // Replace the DUMMY with this instruction which fixes stack size correctly
+            *(unsigned int*) (a) = I_FORMAT(OP_ADDIU, SP, SP, -(l + stackAlignAdjustment));
+
+            int i;
+            int maxargs = l/4;
+            if (maxargs > 4)
+                maxargs = 4;
+    
+            generateArgCode(maxargs, pDecl);
+
+            finalStackSize += l + stackAlignAdjustment;
+
+            DBGPRNT_EXIT();
+        }
+
+        /** Encode a relative address that might also be
+         * a label.
+         */
+        int encodeAddress(int value) {
+            int base = getBase();
+            if (value >= base && value <= getPC() ) {
+                // This is a label, encode it relative to the base.
+                value = value - base;
+            }
+            return encodeRelAddress(value);
+        }
+
+        int encodeRelAddress(int value) {
+            return BRANCH_REL_ADDRESS_MASK & (value >> 2);
+        }
+
+        /* Emit a call to an unknown function. The argument "symbol" needs to
+         * be stored in the location where the address should go. It forms
+         * a chain. The address will be patched later.
+         * Return the address of the word that has to be patched.
+         */
+        virtual int callForward(int symbol, Type* pFunc){
+            DBGPRNT_ENTRY();
+            assert(pFunc->tag == TY_FUNC);
+            setR0Type(pFunc->pHead);
+            int pc = getPC();
+            J(encodeAddress(symbol), __LINE__);
+            NOP(__LINE__);
+            DBGPRNT_EXIT();
+            return pc;
+        }
+
+
+        /* Call a function pointer. L is the number of bytes the arguments
+         * take on the stack. The address of the function is stored at
+         * location SP + l.
+         */
+        virtual void callIndirect(int l, Type* pFunc){
+            DBGPRNT_ENTRY();
+            assert(pFunc->tag == TY_FUNC);
+            popType(); // Get rid of indirect fn pointer type
+
+            l = fixupArgLength(l);
+
+            LW(MIPS_LINK_REG, l + stackAlignAdjustment, SP, __LINE__);
+            JALR(MIPS_LINK_REG, __LINE__);
+            NOP(__LINE__);
+            
+            Type* pReturnType = pFunc->pHead;
+            setR0Type(pReturnType);
+
+            DBGPRNT_EXIT();
+        }
+
+        inline int fixupArgLength(int l) {
+            if (l < MIPSABI_BASE_ARGS_SIZE)
+                return MIPSABI_BASE_ARGS_SIZE;
+
+            if (l % STACK_ALIGNMENT)
+                return l + STACK_ALIGNMENT - (l % STACK_ALIGNMENT);
+
+            return l;
+        }
+
+        /* Adjust SP after returning from a function call. l is the
+         * number of bytes of arguments stored on the stack. isIndirect
+         * is true if this was an indirect call. (In which case the
+         * address of the function is stored at location SP + l.)
+         */
+        virtual void adjustStackAfterCall(Type* pDecl, int l, bool isIndirect){
+            DBGPRNT_ENTRY();
+
+            l = fixupArgLength(l);
+
+            /* Since we popped the R0 function call pointer, reduce stack usage */
+            decStack(l + (isIndirect ? 4 : 0) + stackAlignAdjustment, __LINE__);
+
+            popStackCounter();
+            DBGPRNT_EXIT();
+        }
+
+
+        /* Generate a symbol at the current PC. t is the head of a
+         * linked list of addresses to patch.
+         */
+        virtual void gsym(int t){
+            DBGPRNT_ENTRY();
+            int n;
+            int base = getBase();
+            int pc = getPC();
+            while (t) {
+                int data = * (int*) t;
+                int decodedOffset = ((BRANCH_REL_ADDRESS_MASK & data) << 2);
+                if (decodedOffset == 0) {
+                    n = 0;
+                } else {
+                    n = base + decodedOffset; /* next value */
+                }
+                    *(int *) t = (data & ~BRANCH_REL_ADDRESS_MASK)
+                        | encodeRelAddress(pc - t - 4);
+                DBGPRINT("# Patching gsym ins @ insptr=%#0x curpc=%#0x addr=%#0x ins=%#0x\n", t, pc, pc - t - 8, *(int*)t);
+                t = n;
+            }
+            DBGPRNT_EXIT();
+        }
+
+        /* Resolve a forward reference function at the current PC.
+         * t is the head of a
+         * linked list of addresses to patch.
+         * (Like gsym, but using absolute address, not PC relative address.)
+         */
+        virtual void resolveForward(int t){
+            if (t) {
+                int pc = getPC();
+                *(int *) t = pc;
+            }
+        }
+
+        /*
+         * Do any cleanup work required at the end of a compile.
+         * For example, an instruction cache might need to be
+         * invalidated.
+         * Return non-zero if there is an error.
+         */
+        virtual int finishCompile(){
+            const long base = long(getBase());
+            const long curr = long(getPC());
+            int err = cacheflush(base, curr, 0);
+            if (err)
+                LOGD("Error Flushing Caches: %d(%s)\n", err, strerror(errno));
+            return err;
+        }
+
+        /**
+         * Adjust relative branches by this amount.
+         */
+        virtual int jumpOffset(){
+            return 4;
+        }
+
+        /**
+         * Memory alignment (in bytes) for this type of data
+         */
+        virtual size_t alignmentOf(Type* pType){
+            switch(pType->tag) {
+                case TY_CHAR:
+                    return 1;
+                case TY_SHORT:
+                    return 2;
+                case TY_DOUBLE:
+                    return 8;
+                case TY_ARRAY:
+                    return alignmentOf(pType->pHead);
+                case TY_STRUCT:
+                    return pType->pHead->alignment & 0x7fffffff;
+                case TY_FUNC:
+                    error("alignment of func not supported");
+                    return 1;
+                default:
+                    return 4;
+            }
+        }
+
+        /**
+         * Array element alignment (in bytes) for this type of data.
+         */
+        virtual size_t sizeOf(Type* pType){
+             switch(pType->tag) {
+                case TY_INT:
+                    return 4;
+                case TY_SHORT:
+                    return 2;
+                case TY_CHAR:
+                    return 1;
+                case TY_FLOAT:
+                    return 4;
+                case TY_DOUBLE:
+                    return 8;
+                case TY_POINTER:
+                    return 4;
+                case TY_ARRAY:
+                    return pType->length * sizeOf(pType->pHead);
+                case TY_STRUCT:
+                    return pType->pHead->length;
+                default:
+                    error("Unsupported type %d", pType->tag);
+                    return 0;
+            }
+        }
+
+        static void runtime_structCopy(void* src, size_t size, void* dest) {
+            memcpy(dest, src, size);
+        }
+
+        void incompatibleTypes(Type* pR0Type, Type* pType) {
+            error("Incompatible types old: %d new: %d", pR0Type->tag, pType->tag);
+        }
+
+#ifndef MIPS_USE_HARDFLOAT
+
+        // Comparison to zero
+
+        static int runtime_is_non_zero_f(float a) {
+            return a != 0;
+        }
+
+        static int runtime_is_non_zero_d(double a) {
+            return a != 0;
+        }
+
+        // Comparison to zero
+
+        static int runtime_is_zero_f(float a) {
+            return a == 0;
+        }
+
+        static int runtime_is_zero_d(double a) {
+            return a == 0;
+        }
+
+        // Type conversion
+
+        static int runtime_float_to_int(float a) {
+            return (int) a;
+        }
+
+        static double runtime_float_to_double(float a) {
+            return (double) a;
+        }
+
+        static int runtime_double_to_int(double a) {
+            return (int) a;
+        }
+
+        static float runtime_double_to_float(double a) {
+            return (float) a;
+        }
+
+        static float runtime_int_to_float(int a) {
+            return (float) a;
+        }
+
+        static double runtime_int_to_double(int a) {
+            return (double) a;
+        }
+
+        // Comparisons float
+
+        static int runtime_cmp_eq_ff(float b, float a) {
+            return a == b;
+        }
+
+        static int runtime_cmp_ne_ff(float b, float a) {
+            return a != b;
+        }
+
+        static int runtime_cmp_lt_ff(float b, float a) {
+            return a < b;
+        }
+
+        static int runtime_cmp_le_ff(float b, float a) {
+            return a <= b;
+        }
+
+        static int runtime_cmp_ge_ff(float b, float a) {
+            return a >= b;
+        }
+
+        static int runtime_cmp_gt_ff(float b, float a) {
+            return a > b;
+        }
+
+        // Comparisons double
+
+        static int runtime_cmp_eq_dd(double b, double a) {
+            return a == b;
+        }
+
+        static int runtime_cmp_ne_dd(double b, double a) {
+            return a != b;
+        }
+
+        static int runtime_cmp_lt_dd(double b, double a) {
+            return a < b;
+        }
+
+        static int runtime_cmp_le_dd(double b, double a) {
+            return a <= b;
+        }
+
+        static int runtime_cmp_ge_dd(double b, double a) {
+            return a >= b;
+        }
+
+        static int runtime_cmp_gt_dd(double b, double a) {
+            return a > b;
+        }
+
+        // Math float
+
+        static float runtime_op_add_ff(float b, float a) {
+            return a + b;
+        }
+
+        static float runtime_op_sub_ff(float b, float a) {
+            return a - b;
+        }
+
+        static float runtime_op_mul_ff(float b, float a) {
+            return a * b;
+        }
+
+        static float runtime_op_div_ff(float b, float a) {
+            return a / b;
+        }
+
+        static float runtime_op_neg_f(float a) {
+            return -a;
+        }
+
+        // Math double
+
+        static double runtime_op_add_dd(double b, double a) {
+            return a + b;
+        }
+
+        static double runtime_op_sub_dd(double b, double a) {
+            return a - b;
+        }
+
+        static double runtime_op_mul_dd(double b, double a) {
+            return a * b;
+        }
+
+        static double runtime_op_div_dd(double b, double a) {
+            return a / b;
+        }
+
+        static double runtime_op_neg_d(double a) {
+            return -a;
+        }
+
+#endif
+
+    };
+
+#endif    //    PROVIDE_MIPS_CODEGEN
+
 #ifdef PROVIDE_X86_CODEGEN
 
     class X86CodeGenerator : public CodeGenerator {
@@ -3358,7 +5438,8 @@ class Compiler : public ErrorSink {
 
         virtual int finishCompile() {
             int result = mpBase->finishCompile();
-            fprintf(stderr, "finishCompile() = %d\n", result);
+            if (result)
+                LOGD("finishCompile() returned = %d\n", result);
             return result;
         }
 
@@ -5872,7 +7953,21 @@ class Compiler : public ErrorSink {
                         if (accept('=')) {
                             if (tok == TOK_NUM) {
                                 if (name) {
+#ifdef    HAVE_BIG_ENDIAN
+                                    switch (pDecl->tag) {
+                                        case TY_CHAR:
+                                            * (char*) name->pAddress = tokc;
+                                            break;
+                                        case TY_SHORT:
+                                            * (short*) name->pAddress = tokc;
+                                            break;
+                                        default:
+                                            * (int*) name->pAddress = tokc;
+                                            break;
+                                    }
+#else
                                     * (int*) name->pAddress = tokc;
+#endif
                                 }
                                 next();
                             } else {
@@ -6023,6 +8118,13 @@ class Compiler : public ErrorSink {
                 pCodeBuf = new ARMCodeBuf(pCodeBuf);
             }
 #endif
+#ifdef PROVIDE_MIPS_CODEGEN
+            if (! pGen && strcmp(architecture, "mips") == 0) {
+                MIPSCodeGenerator m;
+                LOGD("Starting MIPS Code generator\n");
+                pGen = new MIPSCodeGenerator();
+            }
+#endif
 #ifdef PROVIDE_X86_CODEGEN
             if (! pGen && strcmp(architecture, "x86") == 0) {
                 pGen = new X86CodeGenerator();
@@ -6037,6 +8139,8 @@ class Compiler : public ErrorSink {
 #if defined(DEFAULT_ARM_CODEGEN)
             pGen = new ARMCodeGenerator();
             pCodeBuf = new ARMCodeBuf(pCodeBuf);
+#elif defined(DEFAULT_MIPS_CODEGEN)
+            pGen = new MIPSCodeGenerator();
 #elif defined(DEFAULT_X86_CODEGEN)
             pGen = new X86CodeGenerator();
 #endif
@@ -6344,10 +8448,34 @@ void accScriptSource(ACCscript* script,
 
 extern "C"
 void accCompileScript(ACCscript* script) {
+#ifdef DEBUG
+    int counter;
+    char path[PATH_MAX];
+    for (counter = 0; counter < 4096; counter++) {
+        sprintf(path, DEBUG_GENCODE_DUMP_PATTERN, counter);
+        if(access(path, F_OK) != 0) {
+            break;
+        }
+    }
+    if (counter < 4096) {
+        dbglog = fopen(path, "w");
+        if (dbglog) {
+            LOGD("Saving assembly code to file: %s", path);
+        } else {
+            LOGD("Could not save assembly code. errno: %d", errno);
+        }
+    }
+#endif
     int result = script->compiler.compile(script->text, script->textLength);
     if (result) {
         script->setError(ACC_INVALID_OPERATION);
     }
+#ifdef DEBUG
+    if (dbglog) {
+        fclose(dbglog);
+        dbglog = NULL;
+    }
+#endif
 }
 
 extern "C"

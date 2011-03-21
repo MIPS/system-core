@@ -22,9 +22,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/time.h>
 
 #include <cutils/memory.h>
 #include <cutils/log.h>
+#include <cutils/properties.h>
 
 #include "buffer.h"
 #include "scanline.h"
@@ -32,6 +34,7 @@
 #include "codeflinger/CodeCache.h"
 #include "codeflinger/GGLAssembler.h"
 #include "codeflinger/ARMAssembler.h"
+#include "codeflinger/MIPSAssembler.h"
 //#include "codeflinger/ARMAssemblerOptimizer.h"
 
 // ----------------------------------------------------------------------------
@@ -49,20 +52,35 @@
 #   define ANDROID_CODEGEN      ANDROID_CODEGEN_GENERATED
 #endif
 
-#if defined(__arm__)
+// hack
+//#if defined(__arm__)
+//#   define ANDROID_ARM_CODEGEN  1
+//#else
+//#   define ANDROID_ARM_CODEGEN  0
+//#endif
+
 #   define ANDROID_ARM_CODEGEN  1
-#else
-#   define ANDROID_ARM_CODEGEN  0
-#endif
+
 
 #define DEBUG__CODEGEN_ONLY     0
 
 
+#ifdef __mips__
+#define ASSEMBLY_SCRATCH_SIZE   4096
+#else
 #define ASSEMBLY_SCRATCH_SIZE   2048
+#endif
 
 // ----------------------------------------------------------------------------
 namespace android {
 // ----------------------------------------------------------------------------
+
+
+#ifdef PFTEST
+#define property_get(a, b, c)
+#endif
+
+
 
 static void init_y(context_t*, int32_t);
 static void init_y_noop(context_t*, int32_t);
@@ -96,6 +114,8 @@ extern "C" void scanline_t32cb16blend_arm(uint16_t*, uint32_t*, size_t);
 extern "C" void scanline_t32cb16_arm(uint16_t *dst, uint32_t *src, size_t ct);
 extern "C" void scanline_col32cb16blend_neon(uint16_t *dst, uint32_t *col, size_t ct);
 extern "C" void scanline_col32cb16blend_arm(uint16_t *dst, uint32_t col, size_t ct);
+
+extern "C" void scanline_t32cb16blend_mips(uint16_t*, uint32_t*, size_t);
 
 // ----------------------------------------------------------------------------
 
@@ -152,10 +172,22 @@ static  const needs_filter_t fill16noblend = {
         { 0xFFFFFFC0, 0xFFFFFFFF, { 0x0000003F, 0x0000003F } }
 };
 
+static  const needs_filter_t debug_broken_needs = {
+        { 0x03515104, 0x00000077, { 0x00001001, 0x00000000 } },
+        { 0xFFFFFFFF, 0xFFFFFFFF, { 0x0000FFFF, 0x0000003F } }
+};
+
+
+
 // ----------------------------------------------------------------------------
 
 #if ANDROID_ARM_CODEGEN
+
+#if defined(__mips__)
+static CodeCache gCodeCache(32 * 1024);
+#else
 static CodeCache gCodeCache(12 * 1024);
+#endif
 
 class ScanlineAssembly : public Assembly {
     AssemblyKey<needs_t> mKey;
@@ -187,6 +219,83 @@ void ggl_uninit_scanline(context_t* c)
 
 // ----------------------------------------------------------------------------
 
+// wrapper allows the user to dynamically change from C to generated-assembly
+// it checks 'debug.pf.asm' property only periodically for efficiency reasons
+// must handle code generation here as well, if user enables in middle of app
+void scanline_wrapper(context_t* c)
+{
+    static bool use_assembly_scanline = false;
+    static int count = 0;
+    
+    if (count == 0) {
+        // evaluate property
+        char value[PROPERTY_VALUE_MAX];
+        value[0] = '\0';
+        property_get("debug.pf.asm", value, "1"); // seems to take 6-7us on RMI
+        use_assembly_scanline = (atoi(value) == 0) ? false : true;
+
+
+        // generate code for our pixel pipeline, if not already cached
+        const AssemblyKey<needs_t> key(c->state.needs);
+        sp<Assembly> assembly = gCodeCache.lookup(key);
+        if (assembly == 0) {
+            // create a new assembly region
+            sp<ScanlineAssembly> a = new ScanlineAssembly(c->state.needs, 
+                    ASSEMBLY_SCRATCH_SIZE);
+            // initialize our assembler
+#ifdef __mips__
+            GGLAssembler assembler( new ArmToMipsAssembler(a) );
+#endif
+#ifdef __arm__
+            GGLAssembler assembler( new ARMAssembler(a) );
+            // GGLAssembler assembler(
+            //				new ARMAssemblerOptimizer(new ARMAssembler(a)) );
+#endif
+            // generate the scanline code for the given needs
+            int err = assembler.scanline(c->state.needs, c);
+            if (ggl_likely(!err)) {
+                // finally, cache this assembly
+                err = gCodeCache.cache(a->key(), a);
+            }
+            if (ggl_unlikely(err)) {
+                LOGE("error generating or caching assembly. Reverting to NOP.");
+                c->scanline = scanline_noop;
+                c->init_y = init_y_noop;
+                c->step_y = step_y__nop;
+                return;
+            }
+            assembly = a;
+        }
+
+        // release the previous assembly
+        if (c->scanline_as) {
+            c->scanline_as->decStrong(c);
+        }
+
+        c->scanline_as = assembly.get();
+        c->scanline_as->incStrong(c); //  hold on to assembly
+    }
+
+    if (++count > 16000) {
+        count = 0;      // force periodic re-evaluation of prop
+    }
+
+    if (use_assembly_scanline) {
+        // must re-acquire asm_scanline here, as it may have swapped
+        // out from under us via the pick_scanline()
+    	void (*asm_scanline)(context_t* c);
+        Assembly *assem = c->scanline_as;
+        asm_scanline = (void(*)(context_t* c))assem->base();
+        (*asm_scanline)(c);
+    } else {
+        scanline(c);        // direct call to C version
+    }
+}
+
+
+
+// ----------------------------------------------------------------------------
+
 static void pick_scanline(context_t* c)
 {
 #if (!defined(DEBUG__CODEGEN_ONLY) || (DEBUG__CODEGEN_ONLY == 0))
@@ -198,9 +307,9 @@ static void pick_scanline(context_t* c)
     return;
 #endif
 
-    //printf("*** needs [%08lx:%08lx:%08lx:%08lx]\n",
-    //    c->state.needs.n, c->state.needs.p,
-    //    c->state.needs.t[0], c->state.needs.t[1]);
+    // LOGI("*** needs [%08x:%08x:%08x:%08x]\n",
+    //     c->state.needs.n, c->state.needs.p,
+    //     c->state.needs.t[0], c->state.needs.t[1]);
 
     // first handle the special case that we cannot test with a filter
     const uint32_t cb_format = GGL_READ_NEEDS(CB_FORMAT, c->state.needs.n);
@@ -228,9 +337,9 @@ static void pick_scanline(context_t* c)
     if (c->state.needs.match(fill16noblend)) {
         c->init_y = init_y_packed;
         switch (c->formats[cb_format].size) {
-        case 1: c->scanline = scanline_memset8;  return;
-        case 2: c->scanline = scanline_memset16; return;
-        case 4: c->scanline = scanline_memset32; return;
+            case 1: c->scanline = scanline_memset8;  return;
+            case 2: c->scanline = scanline_memset16; return;
+            case 4: c->scanline = scanline_memset32; return;
         }
     }
 
@@ -248,48 +357,57 @@ static void pick_scanline(context_t* c)
     c->init_y = init_y;
     c->step_y = step_y__generic;
 
-#if ANDROID_ARM_CODEGEN
-    // we're going to have to generate some code...
-    // here, generate code for our pixel pipeline
-    const AssemblyKey<needs_t> key(c->state.needs);
-    sp<Assembly> assembly = gCodeCache.lookup(key);
-    if (assembly == 0) {
-        // create a new assembly region
-        sp<ScanlineAssembly> a = new ScanlineAssembly(c->state.needs, 
-                ASSEMBLY_SCRATCH_SIZE);
-        // initialize our assembler
-        GGLAssembler assembler( new ARMAssembler(a) );
-        //GGLAssembler assembler(
-        //        new ARMAssemblerOptimizer(new ARMAssembler(a)) );
-        // generate the scanline code for the given needs
-        int err = assembler.scanline(c->state.needs, c);
-        if (ggl_likely(!err)) {
-            // finally, cache this assembly
-            err = gCodeCache.cache(a->key(), a);
-        }
-        if (ggl_unlikely(err)) {
-            LOGE("error generating or caching assembly. Reverting to NOP.");
-            c->scanline = scanline_noop;
-            c->init_y = init_y_noop;
-            c->step_y = step_y__nop;
-            return;
-        }
-        assembly = a;
-    }
+// #if ANDROID_ARM_CODEGEN  - codegen was previously a compile-time decision
 
-    // release the previous assembly
-    if (c->scanline_as) {
-        c->scanline_as->decStrong(c);
-    }
-
-    //LOGI("using generated pixel-pipeline");
-    c->scanline_as = assembly.get();
-    c->scanline_as->incStrong(c); //  hold on to assembly
-    c->scanline = (void(*)(context_t* c))assembly->base();
-#else
-//    LOGW("using generic (slow) pixel-pipeline");
-    c->scanline = scanline;
+    // generate assembly pixel-pipeline based on property
+    char value[PROPERTY_VALUE_MAX];
+    value[0] = '\0';
+    property_get("debug.pf.asm", value, "1"); // seems to take 6-7us on RMI
+    
+    if (atoi(value) == 1) {
+        // generate code for our pixel pipeline
+        const AssemblyKey<needs_t> key(c->state.needs);
+        sp<Assembly> assembly = gCodeCache.lookup(key);
+        if (assembly == 0) {
+            // create a new assembly region
+            sp<ScanlineAssembly> a = new ScanlineAssembly(c->state.needs, 
+                    ASSEMBLY_SCRATCH_SIZE);
+            // initialize our assembler
+#ifdef __mips__
+            GGLAssembler assembler( new ArmToMipsAssembler(a) );
 #endif
+#ifdef __arm__
+            GGLAssembler assembler( new ARMAssembler(a) );
+            //GGLAssembler assembler(
+            //        new ARMAssemblerOptimizer(new ARMAssembler(a)) );
+#endif
+            // generate the scanline code for the given needs
+            int err = assembler.scanline(c->state.needs, c);
+            if (ggl_likely(!err)) {
+                // finally, cache this assembly
+                err = gCodeCache.cache(a->key(), a);
+            }
+            if (ggl_unlikely(err)) {
+                LOGE("error generating or caching assembly. Reverting to NOP.");
+                c->scanline = scanline_noop;
+                c->init_y = init_y_noop;
+                c->step_y = step_y__nop;
+                return;
+            }
+            assembly = a;
+        }
+
+        // release the previous assembly
+        if (c->scanline_as) {
+            c->scanline_as->decStrong(c);
+        }
+
+        c->scanline_as = assembly.get();
+        c->scanline_as->incStrong(c); //  hold on to assembly
+    }
+
+    // this indirection costs some performance, but allows runtime switching
+    c->scanline = scanline_wrapper;   
 }
 
 void ggl_pick_scanline(context_t* c)
@@ -314,9 +432,9 @@ static void blend_factor(context_t* c, pixel_t* r, uint32_t factor,
         const pixel_t* src, const pixel_t* dst);
 static void rescale(uint32_t& u, uint8_t& su, uint32_t& v, uint8_t& sv);
 
-#if ANDROID_ARM_CODEGEN && (ANDROID_CODEGEN == ANDROID_CODEGEN_GENERATED)
+// #if ANDROID_ARM_CODEGEN && (ANDROID_CODEGEN == ANDROID_CODEGEN_GENERATED)
+#if 0 //  - plind, do both code-gen and C scanline in same build
 
-// no need to compile the generic-pipeline, it can't be reached
 void scanline(context_t*)
 {
 }
@@ -790,6 +908,7 @@ discard:
 }
 
 #endif // ANDROID_ARM_CODEGEN && (ANDROID_CODEGEN == ANDROID_CODEGEN_GENERATED)
+
 
 // ----------------------------------------------------------------------------
 #if 0
@@ -1370,6 +1489,8 @@ void scanline_t32cb16blend(context_t* c)
 
 #if ((ANDROID_CODEGEN >= ANDROID_CODEGEN_ASM) && defined(__arm__))
     scanline_t32cb16blend_arm(dst, src, ct);
+#elif ((ANDROID_CODEGEN >= ANDROID_CODEGEN_ASM) && defined(__mips__))
+    scanline_t32cb16blend_mips(dst, src, ct);
 #else
     while (ct--) {
         uint32_t s = *src++;
@@ -1519,9 +1640,8 @@ void rect_memcpy(context_t* c, size_t yc)
 }; // namespace android
 
 using namespace android;
-extern "C" void ggl_test_codegen(uint32_t n, uint32_t p, uint32_t t0, uint32_t t1)
+extern "C" void ggl_test_codegen(int mode, uint32_t n, uint32_t p, uint32_t t0, uint32_t t1)
 {
-#if ANDROID_ARM_CODEGEN
     GGLContext* c;
     gglInit(&c);
     needs_t needs;
@@ -1529,15 +1649,45 @@ extern "C" void ggl_test_codegen(uint32_t n, uint32_t p, uint32_t t0, uint32_t t
     needs.p = p;
     needs.t[0] = t0;
     needs.t[1] = t1;
+    int err = 0;
     sp<ScanlineAssembly> a(new ScanlineAssembly(needs, ASSEMBLY_SCRATCH_SIZE));
-    GGLAssembler assembler( new ARMAssembler(a) );
-    int err = assembler.scanline(needs, (context_t*)c);
+    if (mode == 1) {
+        // just arm
+        GGLAssembler assembler( new ARMAssembler(a) );
+        err = assembler.scanline(needs, (context_t*)c);
+    } else if (mode == 2) {
+        // just mips
+        GGLAssembler assembler( new ArmToMipsAssembler(a) );
+        err = assembler.scanline(needs, (context_t*)c);
+    } else if (mode == 3) {
+        // mips and arm, with combined disassembler output
+
+        // array of 40-char strings to hold disassem text
+        typedef char dstr[40];
+        dstr * arm_dstr = (dstr *) malloc(500 * sizeof(dstr));     
+        LOG_ALWAYS_FATAL_IF(arm_dstr == NULL, "can't get memory for arm disassem buffer\n");
+
+        GGLAssembler assembler( new ARMAssembler(a, (char *)arm_dstr) );
+        err = assembler.scanline(needs, (context_t*)c);
+        int instr_count = a->size() / 4;
+
+        // debug junk
+        // int i;
+        // printf("adr dstr: %08x, instr count: %d\n", (uint32_t)arm_dstr, instr_count);
+        // for (i=0; i<20; ++i) {
+        //     printf("inst %3d:  %s\n", i, &arm_dstr[i][0]);
+        // }
+
+        GGLAssembler mipsassembler( new ArmToMipsAssembler(a, (char *)arm_dstr, 40, instr_count) );
+        err = mipsassembler.scanline(needs, (context_t*)c);
+        free(arm_dstr);
+    } else {
+        printf("error, bad input mode %d, must be 1 (arm) or 2 (mips), or 3 (both)\n", mode);
+        gglUninit(c);
+    }
     if (err != 0) {
         printf("error %08x (%s)\n", err, strerror(-err));
     }
     gglUninit(c);
-#else
-    printf("This test runs only on ARM\n");
-#endif
 }
 

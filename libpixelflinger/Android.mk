@@ -21,12 +21,14 @@ PIXELFLINGER_SRC_FILES:= \
     codeflinger/ARMAssemblerInterface.cpp \
     codeflinger/ARMAssemblerProxy.cpp \
     codeflinger/ARMAssembler.cpp \
+    codeflinger/MIPSAssembler.cpp \
     codeflinger/CodeCache.cpp \
     codeflinger/GGLAssembler.cpp \
     codeflinger/load_store.cpp \
     codeflinger/blending.cpp \
     codeflinger/texturing.cpp \
     codeflinger/disassem.c \
+    codeflinger/mips_disassem.c \
 	tinyutils/SharedBuffer.cpp \
 	tinyutils/VectorImpl.cpp \
 	fixed.cpp.arm \
@@ -51,6 +53,11 @@ endif
 
 ifeq ($(TARGET_ARCH),arm)
 # special optimization flags for pixelflinger
+PIXELFLINGER_CFLAGS += -fstrict-aliasing -fomit-frame-pointer
+endif
+
+ifeq ($(TARGET_ARCH),mips)
+PIXELFLINGER_SRC_FILES += arch-mips/t32cb16blend.S
 PIXELFLINGER_CFLAGS += -fstrict-aliasing -fomit-frame-pointer
 endif
 

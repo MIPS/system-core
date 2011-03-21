@@ -113,13 +113,16 @@ LOCAL_SRC_FILES := $(commonSources) ashmem-dev.c mq.c
 
 ifeq ($(TARGET_ARCH),arm)
 LOCAL_SRC_FILES += memset32.S
-else  # !arm
+endif
+ifeq ($(TARGET_ARCH),x86)
+LOCAL_SRC_FILES += memory.c
+endif
 ifeq ($(TARGET_ARCH),sh)
 LOCAL_SRC_FILES += memory.c atomic-android-sh.c
-else  # !sh
-LOCAL_SRC_FILES += memory.c
-endif # !sh
-endif # !arm
+endif
+ifeq ($(TARGET_ARCH),mips)
+LOCAL_SRC_FILES += memset32_mips.S
+endif
 
 LOCAL_C_INCLUDES := $(KERNEL_HEADERS)
 LOCAL_STATIC_LIBRARIES := liblog

@@ -45,6 +45,8 @@
 #include <cutils/atomic-x86.h>
 #elif defined(__sh__)
 /* implementation is in atomic-android-sh.c */
+#elif defined(__mips__)
+#include <cutils/atomic-mips.h>
 #else
 #error atomic operations are unsupported
 #endif

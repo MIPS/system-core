@@ -36,6 +36,12 @@ namespace android {
 #include <errno.h>
 #endif
 
+#if defined(__mips__)
+#include <asm/cachectl.h>
+#include <errno.h>
+#endif
+
+// ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
 Assembly::Assembly(size_t size)
@@ -155,13 +161,11 @@ int CodeCache::cache(  const AssemblyKeyBase& keyBase,
         mCacheInUse += assemblySize;
         mWhen++;
         // synchronize caches...
-#if defined(__arm__)
         const long base = long(assembly->base());
         const long curr = base + long(assembly->size());
         err = cacheflush(base, curr, 0);
-        LOGE_IF(err, "__ARM_NR_cacheflush error %s\n",
+        LOGE_IF(err, "cacheflush error %s\n",
                 strerror(errno));
-#endif
     }
 
     pthread_mutex_unlock(&mLock);

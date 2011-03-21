@@ -50,11 +50,17 @@
 #endif
 #endif
 
+#ifdef __arm__
 /* Main entry point to get the backtrace from the crashing process */
 extern int unwind_backtrace_with_ptrace(int tfd, pid_t pid, mapinfo *map,
                                         unsigned int sp_list[],
                                         int *frame0_pc_sane,
                                         bool at_fault);
+#endif
+
+#ifdef __mips__
+#define REG(v) ((unsigned long)(v))
+#endif
 
 static int logsocket = -1;
 
@@ -131,14 +137,23 @@ void dump_stack_and_code(int tfd, int pid, mapinfo *map,
                          bool at_fault)
 {
     unsigned int sp, pc, p, end, data;
+    unsigned int retpc;
     struct pt_regs r;
     int sp_depth;
     bool only_in_tombstone = !at_fault;
     char code_buffer[80];
 
     if(ptrace(PTRACE_GETREGS, pid, 0, &r)) return;
+#ifdef __arm__
     sp = r.ARM_sp;
     pc = r.ARM_pc;
+    retpc = r.ARM_lr;
+#endif
+#ifdef __mips__
+    sp = REG(r.regs[29]);
+    pc = REG(r.cp0_epc);
+    retpc = REG(r.regs[31]);
+#endif
 
     _LOG(tfd, only_in_tombstone, "\ncode around pc:\n");
 
@@ -163,14 +178,19 @@ void dump_stack_and_code(int tfd, int pid, mapinfo *map,
         _LOG(tfd, only_in_tombstone, "%s\n", code_buffer);
     }
 
-    if ((unsigned) r.ARM_lr != pc) {
+    if (retpc != pc) {
+#ifdef __arm__
         _LOG(tfd, only_in_tombstone, "\ncode around lr:\n");
+#endif
+#ifdef __mips__
+        _LOG(tfd, only_in_tombstone, "\ncode around ra:\n");
+#endif
 
-        end = p = r.ARM_lr & ~3;
+        end = p = retpc & ~3;
         p -= 32;
         end += 32;
 
-        /* Dump the code around LR as:
+        /* Dump the code around return address as:
          *  addr       contents
          *  00008d34   fffffcd0 4c0eb530 b0934a0e 1c05447c
          *  00008d44   f7ff18a0 490ced94 68035860 d0012b00
@@ -257,12 +277,22 @@ void dump_pc_and_lr(int tfd, int pid, mapinfo *map, int unwound_level,
         return;
     }
 
+#ifdef __arm__
     if (unwound_level == 0) {
         _LOG(tfd, !at_fault, "         #%02d  pc %08x  %s\n", 0, r.ARM_pc,
              map_to_name(map, r.ARM_pc, "<unknown>"));
     }
     _LOG(tfd, !at_fault, "         #%02d  lr %08x  %s\n", 1, r.ARM_lr,
             map_to_name(map, r.ARM_lr, "<unknown>"));
+#endif
+#ifdef __mips__
+    if (unwound_level == 0) {
+	_LOG(tfd, !at_fault, "         #%02d  pc %08x  %s\n", 0, REG(r.cp0_epc),
+	     map_to_name(map, REG(r.cp0_epc), "<unknown>"));
+    }
+    _LOG(tfd, !at_fault, "         #%02d  ra %08x  %s\n", 1, REG(r.regs[31]),
+	 map_to_name(map, REG(r.regs[31]), "<unknown>"));
+#endif
 }
 
 void dump_registers(int tfd, int pid, bool at_fault)
@@ -276,6 +306,7 @@ void dump_registers(int tfd, int pid, bool at_fault)
         return;
     }
 
+#ifdef __arm__
     _LOG(tfd, only_in_tombstone, " r0 %08x  r1 %08x  r2 %08x  r3 %08x\n",
          r.ARM_r0, r.ARM_r1, r.ARM_r2, r.ARM_r3);
     _LOG(tfd, only_in_tombstone, " r4 %08x  r5 %08x  r6 %08x  r7 %08x\n",
@@ -303,6 +334,27 @@ void dump_registers(int tfd, int pid, bool at_fault)
     }
     _LOG(tfd, only_in_tombstone, " scr %08lx\n\n", vfp_regs.fpscr);
 #endif
+#endif
+#ifdef __mips__
+   _LOG(tfd, only_in_tombstone, " zr %08x  at %08x  v0 %08x  v1 %08x\n",
+	REG(r.regs[0]), REG(r.regs[1]), REG(r.regs[2]), REG(r.regs[3]));
+   _LOG(tfd, only_in_tombstone, " a0 %08x  a1 %08x  a2 %08x  a3 %08x\n",
+	REG(r.regs[4]), REG(r.regs[5]), REG(r.regs[6]), REG(r.regs[7]));
+   _LOG(tfd, only_in_tombstone, " t0 %08x  t1 %08x  t2 %08x  t3 %08x\n",
+	REG(r.regs[8]), REG(r.regs[9]), REG(r.regs[10]), REG(r.regs[11]));
+   _LOG(tfd, only_in_tombstone, " t4 %08x  t5 %08x  t6 %08x  t7 %08x\n",
+	REG(r.regs[12]), REG(r.regs[13]), REG(r.regs[14]), REG(r.regs[15]));
+   _LOG(tfd, only_in_tombstone, " s0 %08x  s1 %08x  s2 %08x  s3 %08x\n",
+	REG(r.regs[16]), REG(r.regs[17]), REG(r.regs[18]), REG(r.regs[19]));
+   _LOG(tfd, only_in_tombstone, " s4 %08x  s5 %08x  s6 %08x  s7 %08x\n",
+	REG(r.regs[20]), REG(r.regs[21]), REG(r.regs[22]), REG(r.regs[23]));
+   _LOG(tfd, only_in_tombstone, " t8 %08x  t9 %08x  k0 %08x  k1 %08x\n",
+	REG(r.regs[24]), REG(r.regs[25]), REG(r.regs[26]), REG(r.regs[27]));
+   _LOG(tfd, only_in_tombstone, " gp %08x  sp %08x  s8 %08x  ra %08x\n",
+	REG(r.regs[28]), REG(r.regs[29]), REG(r.regs[30]), REG(r.regs[31]));
+   _LOG(tfd, only_in_tombstone, " hi %08x  lo %08x bva %08x epc %08x\n",
+	REG(r.hi), REG(r.lo), REG(r.cp0_badvaddr), REG(r.cp0_epc));
+#endif
 }
 
 const char *get_signame(int sig)
@@ -313,7 +365,10 @@ const char *get_signame(int sig)
     case SIGBUS:     return "SIGBUS";
     case SIGFPE:     return "SIGFPE";
     case SIGSEGV:    return "SIGSEGV";
+#ifdef SIGSTKFLT
     case SIGSTKFLT:  return "SIGSTKFLT";
+#endif
+    case SIGPIPE:    return "SIGPIPE";
     default:         return "?";
     }
 }
@@ -399,6 +454,7 @@ void dump_crash_banner(int tfd, unsigned pid, unsigned tid, int sig)
     if(sig) dump_fault_addr(tfd, tid, sig);
 }
 
+#ifdef __arm__
 static void parse_exidx_info(mapinfo *milist, pid_t pid)
 {
     mapinfo *mi;
@@ -432,6 +488,7 @@ static void parse_exidx_info(mapinfo *milist, pid_t pid)
         }
     }
 }
+#endif
 
 void dump_crash_report(int tfd, unsigned pid, unsigned tid, bool at_fault)
 {
@@ -466,13 +523,21 @@ void dump_crash_report(int tfd, unsigned pid, unsigned tid, bool at_fault)
         fclose(fp);
     }
 
+#ifdef __arm__
     parse_exidx_info(milist, tid);
+#endif
 
     /* If stack unwinder fails, use the default solution to dump the stack
      * content.
      */
+#ifdef __arm__
     stack_depth = unwind_backtrace_with_ptrace(tfd, tid, milist, sp_list,
                                                &frame0_pc_sane, at_fault);
+#endif
+#ifdef __mips__
+    stack_depth = 0;
+    frame0_pc_sane = 1;
+#endif
 
     /* The stack unwinder should at least unwind two levels of stack. If less
      * level is seen we make sure at lease pc and lr are dumped.
@@ -807,7 +872,11 @@ static void handle_crashing_process(int fd)
             case SIGBUS:
             case SIGFPE:
             case SIGSEGV:
-            case SIGSTKFLT: {
+#ifdef SIGSTKFLT
+            case SIGSTKFLT:
+#endif
+            case SIGPIPE:
+	    {
                 XLOG("stopped -- fatal signal\n");
                 need_cleanup = engrave_tombstone(cr.pid, tid, debug_uid, n);
                 kill(tid, SIGSTOP);

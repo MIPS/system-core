@@ -43,6 +43,7 @@ class RegisterAllocator
 public:
     class RegisterFile;
     
+                    RegisterAllocator(int arch);
     RegisterFile&   registerFile();
     int             reserveReg(int reg);
     int             obtainReg();
@@ -52,8 +53,8 @@ public:
     class RegisterFile
     {
     public:
-                            RegisterFile();
-                            RegisterFile(const RegisterFile& rhs);
+                            RegisterFile(int arch);
+                            RegisterFile(const RegisterFile& rhs, int x);
                             ~RegisterFile();
 
                 void        reset();
@@ -86,6 +87,9 @@ public:
         uint32_t    mRegs;
         uint32_t    mTouched;
         uint32_t    mStatus;
+        int         mArch;
+        uint32_t    mRegisterOffset;    // lets reg alloc use 2..17 for mips
+                                        // while arm uses 0..15
     };
  
     class Scratch
@@ -515,6 +519,8 @@ private:
     };
 
     static int blending_codes(int fs, int fd);
+
+    void dbg_log_context(context_t const* c);   // FIXME: remove this debug code
 
     builder_context_t   mBuilderContext;
     texture_machine_t   mTextureMachine;
