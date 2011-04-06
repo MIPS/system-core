@@ -199,15 +199,20 @@ inline GGLfixed gglMulx(GGLfixed a, GGLfixed b, int shift) {
 
     if (__builtin_constant_p(shift)) {
         if (shift == 0) {
-            asm ("mult %[a], %[b] \t\n"
+            asm (".set push       \t\n"
+              ".set nomips16   \t\n"
+              "mult %[a], %[b] \t\n"
               "mflo  %[res]   \t\n"
+              ".set pop        \t\n"
             : [res]"=&r"(result),[tmp]"=&r"(tmp)
             : [a]"r"(a),[b]"r"(b)
             : "%hi","%lo"
             );
         } else if (shift == 32)
         {
-            asm ("mult %[a], %[b] \t\n"
+            asm (".set push       \t\n"
+            ".set nomips16   \t\n"
+            "mult %[a], %[b] \t\n"
             "li  %[tmp],1\t\n"
             "sll  %[tmp],%[tmp],0x1f\t\n"
             "mflo %[res]   \t\n"
@@ -217,13 +222,16 @@ inline GGLfixed gglMulx(GGLfixed a, GGLfixed b, int shift) {
             "mfhi  %[res]   \t\n"
             "addu %[res],%[res],%[tmp]\t\n"
             "addu %[res],%[res],%[tmp1]\t\n"
+            ".set pop        \t\n"
             : [res]"=&r"(result),[tmp]"=&r"(tmp),[tmp1]"=&r"(tmp1)
             : [a]"r"(a),[b]"r"(b),[shift]"I"(shift)
             : "%hi","%lo"
             );
         } else if ((shift >0) && (shift < 32))
         {
-            asm ("mult %[a], %[b] \t\n"
+            asm (".set push       \t\n"
+            ".set nomips16   \t\n"
+            "mult %[a], %[b] \t\n"
             "li  %[tmp],1 \t\n"
             "sll  %[tmp],%[tmp],%[shiftm1] \t\n"
             "mflo  %[res]   \t\n"
@@ -235,12 +243,15 @@ inline GGLfixed gglMulx(GGLfixed a, GGLfixed b, int shift) {
             "sll   %[tmp],%[tmp],%[lshift] \t\n"
             "srl   %[res],%[res],%[rshift]    \t\n"
             "or    %[res],%[res],%[tmp] \t\n"
+            ".set pop        \t\n"
             : [res]"=&r"(result),[tmp]"=&r"(tmp),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
             : [a]"r"(a),[b]"r"(b),[lshift]"I"(32-shift),[rshift]"I"(shift),[shiftm1]"I"(shift-1)
             : "%hi","%lo"
             );
         } else {
-            asm ("mult %[a], %[b] \t\n"
+            asm (".set push       \t\n"
+            ".set nomips16   \t\n"
+            "mult %[a], %[b] \t\n"
             "li  %[tmp],1 \t\n"
             "sll  %[tmp],%[tmp],%[shiftm1] \t\n"
             "mflo  %[res]   \t\n"
@@ -257,13 +268,16 @@ inline GGLfixed gglMulx(GGLfixed a, GGLfixed b, int shift) {
             "sll   %[tmp],%[tmp],%[norbits] \t\n"
             "or    %[tmp],%[tmp],%[tmp2] \t\n"
             "movz  %[res],%[tmp],%[bit5] \t\n"
+            ".set pop        \t\n"
             : [res]"=&r"(result),[tmp]"=&r"(tmp),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
             : [a]"r"(a),[b]"r"(b),[norbits]"I"(~(shift)),[rshift]"I"(shift),[shiftm1] "I"(shift-1),[bit5]"I"(shift & 0x20)
             : "%hi","%lo"
             );
         }
     } else {
-        asm ("mult %[a], %[b] \t\n"
+        asm (".set push       \t\n"
+        ".set nomips16   \t\n"
+        "mult %[a], %[b] \t\n"
         "li  %[tmp],1 \t\n"
         "sll  %[tmp],%[tmp],%[shiftm1] \t\n"
         "mflo  %[res]   \t\n"
@@ -280,6 +294,7 @@ inline GGLfixed gglMulx(GGLfixed a, GGLfixed b, int shift) {
         "sll   %[tmp],%[tmp],%[norbits] \t\n"
         "or    %[tmp],%[tmp],%[tmp2] \t\n"
         "movz  %[res],%[tmp],%[bit5] \t\n"
+                 ".set pop        \t\n"
          : [res]"=&r"(result),[tmp]"=&r"(tmp),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
          : [a]"r"(a),[b]"r"(b),[norbits]"r"(~(shift)),[rshift] "r"(shift),[shiftm1]"r"(shift-1),[bit5] "r"(shift & 0x20)
          : "%hi","%lo"
@@ -295,35 +310,46 @@ inline GGLfixed gglMulAddx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
 
     if (__builtin_constant_p(shift)) {
         if (shift == 0) {
-                 asm ("mult %[a], %[b] \t\n"
+                 asm (".set push       \t\n"
+                 ".set nomips16   \t\n"
+                 "mult %[a], %[b] \t\n"
                  "mflo  %[lo]   \t\n"
                  "addu  %[lo],%[lo],%[c]    \t\n"
+                 ".set pop        \t\n"
                  : [lo]"=&r"(result)
                  : [a]"r"(a),[b]"r"(b),[c]"r"(c)
                  : "%hi","%lo"
                  );
                 } else if (shift == 32) {
-                    asm ("mult %[a], %[b] \t\n"
+                    asm (".set push       \t\n"
+                    ".set nomips16   \t\n"
+                    "mult %[a], %[b] \t\n"
                     "mfhi  %[lo]   \t\n"
                     "addu  %[lo],%[lo],%[c]    \t\n"
+                    ".set pop        \t\n"
                     : [lo]"=&r"(result)
                     : [a]"r"(a),[b]"r"(b),[c]"r"(c)
                     : "%hi","%lo"
                     );
                 } else if ((shift>0) && (shift<32)) {
-                    asm ("mult %[a], %[b] \t\n"
+                    asm (".set push       \t\n"
+                    ".set nomips16   \t\n"
+                    "mult %[a], %[b] \t\n"
                     "mflo  %[res]   \t\n"
                     "mfhi  %[t]   \t\n"
                     "srl   %[res],%[res],%[rshift]    \t\n"
                     "sll   %[t],%[t],%[lshift]     \t\n"
                     "or  %[res],%[res],%[t]    \t\n"
                     "addu  %[res],%[res],%[c]    \t\n"
+                    ".set pop        \t\n"
                     : [res]"=&r"(result),[t]"=&r"(t)
                     : [a]"r"(a),[b]"r"(b),[c]"r"(c),[lshift]"I"(32-shift),[rshift]"I"(shift)
                     : "%hi","%lo"
                     );
                 } else {
-                    asm ("mult %[a], %[b] \t\n"
+                    asm (".set push       \t\n"
+                    ".set nomips16   \t\n"
+                    "mult %[a], %[b] \t\n"
                     "nor %[tmp1],$zero,%[shift]\t\n"
                     "mflo  %[res]   \t\n"
                     "mfhi  %[t]   \t\n"
@@ -335,13 +361,16 @@ inline GGLfixed gglMulAddx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
                     "andi %[tmp2],%[shift],0x20\t\n"
                     "movz %[res],%[tmp1],%[tmp2]\t\n"
                     "addu  %[res],%[res],%[c]    \t\n"
+                    ".set pop        \t\n"
                     : [res]"=&r"(result),[t]"=&r"(t),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
                     : [a]"r"(a),[b]"r"(b),[c]"r"(c),[shift]"I"(shift)
                     : "%hi","%lo"
                     );
                 }
             } else {
-                asm ("mult %[a], %[b] \t\n"
+                asm (".set push       \t\n"
+                ".set nomips16   \t\n"
+                "mult %[a], %[b] \t\n"
                 "nor %[tmp1],$zero,%[shift]\t\n"
                 "mflo  %[res]   \t\n"
                 "mfhi  %[t]   \t\n"
@@ -353,6 +382,7 @@ inline GGLfixed gglMulAddx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
                 "andi %[tmp2],%[shift],0x20\t\n"
                 "movz %[res],%[tmp1],%[tmp2]\t\n"
                 "addu  %[res],%[res],%[c]    \t\n"
+                ".set pop        \t\n"
                 : [res]"=&r"(result),[t]"=&r"(t),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
                 : [a]"r"(a),[b]"r"(b),[c]"r"(c),[shift]"r"(shift)
                 : "%hi","%lo"
@@ -367,53 +397,67 @@ inline GGLfixed gglMulSubx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
 
     if (__builtin_constant_p(shift)) {
         if (shift == 0) {
-                 asm ("mult %[a], %[b] \t\n"
+                 asm (".set push       \t\n"
+                 ".set nomips16   \t\n"
+                 "mult %[a], %[b] \t\n"
                  "mflo  %[lo]   \t\n"
                  "subu  %[lo],%[lo],%[c]    \t\n"
+                 ".set pop        \t\n"
                  : [lo]"=&r"(result)
                  : [a]"r"(a),[b]"r"(b),[c]"r"(c)
                  : "%hi","%lo"
                  );
                 } else if (shift == 32) {
-                    asm ("mult %[a], %[b] \t\n"
+                    asm (".set push       \t\n"
+                    ".set nomips16   \t\n"
+                    "mult %[a], %[b] \t\n"
                     "mfhi  %[lo]   \t\n"
                     "subu  %[lo],%[lo],%[c]    \t\n"
+                    ".set pop        \t\n"
                     : [lo]"=&r"(result)
                     : [a]"r"(a),[b]"r"(b),[c]"r"(c)
                     : "%hi","%lo"
                     );
                 } else if ((shift>0) && (shift<32)) {
-                    asm ("mult %[a], %[b] \t\n"
+                    asm (".set push       \t\n"
+                    ".set nomips16   \t\n"
+                    "mult %[a], %[b] \t\n"
                     "mflo  %[res]   \t\n"
                     "mfhi  %[t]   \t\n"
                     "srl   %[res],%[res],%[rshift]    \t\n"
                     "sll   %[t],%[t],%[lshift]     \t\n"
                     "or  %[res],%[res],%[t]    \t\n"
                     "subu  %[res],%[res],%[c]    \t\n"
+                    ".set pop        \t\n"
                     : [res]"=&r"(result),[t]"=&r"(t)
                     : [a]"r"(a),[b]"r"(b),[c]"r"(c),[lshift]"I"(32-shift),[rshift]"I"(shift)
                     : "%hi","%lo"
                     );
                 } else {
-                    asm ("mult %[a], %[b] \t\n"
+                    asm (".set push       \t\n"
+                    ".set nomips16   \t\n"
+                    "mult %[a], %[b] \t\n"
                     "nor %[tmp1],$zero,%[shift]\t\n"
-                     "mflo  %[res]   \t\n"
-                     "mfhi  %[t]   \t\n"
-                     "srl   %[res],%[res],%[shift]    \t\n"
-                     "sll   %[tmp2],%[t],1     \t\n"
-                     "sllv  %[tmp2],%[tmp2],%[tmp1]     \t\n"
-                     "or  %[tmp1],%[tmp2],%[res]    \t\n"
-                     "srav  %[res],%[t],%[shift]     \t\n"
-                     "andi %[tmp2],%[shift],0x20\t\n"
-                     "movz %[res],%[tmp1],%[tmp2]\t\n"
-                     "subu  %[res],%[res],%[c]    \t\n"
+                    "mflo  %[res]   \t\n"
+                    "mfhi  %[t]   \t\n"
+                    "srl   %[res],%[res],%[shift]    \t\n"
+                    "sll   %[tmp2],%[t],1     \t\n"
+                    "sllv  %[tmp2],%[tmp2],%[tmp1]     \t\n"
+                    "or  %[tmp1],%[tmp2],%[res]    \t\n"
+                    "srav  %[res],%[t],%[shift]     \t\n"
+                    "andi %[tmp2],%[shift],0x20\t\n"
+                    "movz %[res],%[tmp1],%[tmp2]\t\n"
+                    "subu  %[res],%[res],%[c]    \t\n"
+                    ".set pop        \t\n"
                      : [res]"=&r"(result),[t]"=&r"(t),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
                      : [a]"r"(a),[b]"r"(b),[c]"r"(c),[shift]"I"(shift)
                      : "%hi","%lo"
                      );
                     }
                 } else {
-                asm ("mult %[a], %[b] \t\n"
+                asm (".set push       \t\n"
+                ".set nomips16   \t\n"
+                "mult %[a], %[b] \t\n"
                 "nor %[tmp1],$zero,%[shift]\t\n"
                 "mflo  %[res]   \t\n"
                 "mfhi  %[t]   \t\n"
@@ -425,6 +469,7 @@ inline GGLfixed gglMulSubx(GGLfixed a, GGLfixed b, GGLfixed c, int shift) {
                 "andi %[tmp2],%[shift],0x20\t\n"
                 "movz %[res],%[tmp1],%[tmp2]\t\n"
                 "subu  %[res],%[res],%[c]    \t\n"
+                ".set pop        \t\n"
                 : [res]"=&r"(result),[t]"=&r"(t),[tmp1]"=&r"(tmp1),[tmp2]"=&r"(tmp2)
                 : [a]"r"(a),[b]"r"(b),[c]"r"(c),[shift]"r"(shift)
                 : "%hi","%lo"
@@ -447,9 +492,12 @@ inline int64_t gglMulii(int32_t x, int32_t y) {
         } s;
         int64_t res;
     }u;
-    asm("mult %2, %3 \t\n"
+    asm(".set push       \t\n"
+        ".set nomips16   \t\n"
+        "mult %2, %3 \t\n"
         "mfhi %1   \t\n"
         "mflo %0   \t\n"
+        ".set pop        \t\n"
         : "=r"(u.s.lo), "=&r"(u.s.hi)
         : "%r"(x), "r"(y)
 	: "%hi","%lo"
