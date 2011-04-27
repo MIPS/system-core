@@ -394,6 +394,7 @@ typedef enum {
 #ifndef LOG_EVENT_INT
 #define LOG_EVENT_INT(_tag, _value) {                                       \
         int intBuf = _value;                                                \
+        intBuf = htole32(intBuf);                                           \
         (void) android_btWriteLog(_tag, EVENT_TYPE_INT, &intBuf,            \
             sizeof(intBuf));                                                \
     }
@@ -401,6 +402,7 @@ typedef enum {
 #ifndef LOG_EVENT_LONG
 #define LOG_EVENT_LONG(_tag, _value) {                                      \
         long long longBuf = _value;                                         \
+        longBuf = htole64(longBuf);                                         \
         (void) android_btWriteLog(_tag, EVENT_TYPE_LONG, &longBuf,          \
             sizeof(longBuf));                                               \
     }
