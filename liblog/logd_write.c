@@ -133,6 +133,7 @@ static int __write_to_log_init(log_id_t log_id, struct iovec *vec, size_t nr)
 int __android_log_write(int prio, const char *tag, const char *msg)
 {
     struct iovec vec[3];
+    char cprio = (char) prio;
     log_id_t log_id = LOG_ID_MAIN;
 
     if (!tag)
@@ -149,7 +150,7 @@ int __android_log_write(int prio, const char *tag, const char *msg)
         !strcmp(tag, "SMS"))
             log_id = LOG_ID_RADIO;
 
-    vec[0].iov_base   = (unsigned char *) &prio;
+    vec[0].iov_base   = &cprio;
     vec[0].iov_len    = 1;
     vec[1].iov_base   = (void *) tag;
     vec[1].iov_len    = strlen(tag) + 1;
