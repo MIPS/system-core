@@ -85,13 +85,13 @@ int ifconfig_main(int argc, char *argv[])
             perror(ifr.ifr_name);
             return -1;
         } else
-            strcpy(astring, inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr)
+            strcpy(astring, inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr));
 
         if (ioctl(s, SIOCGIFNETMASK, &ifr) < 0) {
             perror(ifr.ifr_name);
             return -1;
         } else
-            strcpy(mstring, inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr)
+            strcpy(mstring, inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr));
 
         if (ioctl(s, SIOCGIFFLAGS, &ifr) < 0) {
             perror(ifr.ifr_name);
