@@ -746,8 +746,8 @@ int main(int argc, char **argv)
         action_for_each_trigger("boot", action_add_queue_tail);
     }
 
-        /* run all property triggers based on current state of the properties */
-    queue_builtin_action(queue_property_triggers_action, "queue_propety_triggers");
+    /* run all property triggers based on current state of the properties */
+    queue_builtin_action(queue_property_triggers_action, "queue_property_triggers");
 
 
 #if BOOTCHART
