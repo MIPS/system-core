@@ -31,14 +31,14 @@ PIXELFLINGER_SRC_FILES:= \
     codeflinger/mips_disassem.c \
 	tinyutils/SharedBuffer.cpp \
 	tinyutils/VectorImpl.cpp \
-	fixed.cpp.arm \
-	picker.cpp.arm \
-	pixelflinger.cpp.arm \
-	trap.cpp.arm \
-	scanline.cpp.arm \
+	fixed.cpp.arch \
+	picker.cpp.arch \
+	pixelflinger.cpp.arch \
+	trap.cpp.arch \
+	scanline.cpp.arch \
 	format.cpp \
 	clear.cpp \
-	raster.cpp \
+	raster.cpp.arch \
 	buffer.cpp
 
 ifeq ($(TARGET_ARCH),arm)

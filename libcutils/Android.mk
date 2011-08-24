@@ -26,7 +26,7 @@ hostSmpFlag := -DANDROID_SMP=0
 commonSources := \
 	array.c \
 	hashmap.c \
-	atomic.c.arm \
+	atomic.c.arch \
 	native_handle.c \
 	buffer.c \
 	socket_inaddr_any_server.c \
