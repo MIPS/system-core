@@ -91,7 +91,7 @@ typedef enum android_LogPriority {
 /*
  * Send a simple string to the log.
  */
-int __android_log_write(unsigned char prio, const char *tag, const char *text);
+int __android_log_write(int prio, const char *tag, const char *text);
 
 /*
  * Send a formatted string to the log, used like printf(fmt,...)
