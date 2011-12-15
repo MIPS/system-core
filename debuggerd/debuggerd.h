@@ -23,16 +23,20 @@
 
 
 /* Main entry point to get the backtrace from the crashing process */
+extern void dump_registers(int tfd, int pid, bool at_fault);
+
+#ifdef __arm__
 extern int unwind_backtrace_with_ptrace(int tfd, pid_t pid, mapinfo *map,
                                         unsigned int sp_list[],
                                         int *frame0_pc_sane,
                                         bool at_fault);
-
-extern void dump_registers(int tfd, int pid, bool at_fault);
-
-extern int unwind_backtrace_with_ptrace_x86(int tfd, pid_t pid, mapinfo *map, bool at_fault);
-
 void dump_pc_and_lr(int tfd, int pid, mapinfo *map, int unwound_level, bool at_fault);
+#elif __i386__
+extern int unwind_backtrace_with_ptrace_x86(int tfd, pid_t pid, mapinfo *map, bool at_fault);
+#elif __mips__
+extern int unwind_backtrace_with_ptrace_mips(int tfd, pid_t pid, mapinfo *map, bool at_fault);
+void dump_pc_and_ra(int tfd, int pid, mapinfo *map, int unwound_level, bool at_fault);
+#endif
 
 void dump_stack_and_code(int tfd, int pid, mapinfo *map,
                          int unwind_depth, unsigned int sp_list[],
