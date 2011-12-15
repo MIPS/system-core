@@ -109,7 +109,9 @@ const char *get_signame(int sig)
     case SIGBUS:     return "SIGBUS";
     case SIGFPE:     return "SIGFPE";
     case SIGSEGV:    return "SIGSEGV";
+#ifdef SIGSTKFLT
     case SIGSTKFLT:  return "SIGSTKFLT";
+#endif
     case SIGPIPE:    return "SIGPIPE";
     default:         return "?";
     }
@@ -292,6 +294,20 @@ void dump_crash_report(int tfd, unsigned pid, unsigned tid, bool at_fault)
     * content.
     */
     stack_depth = unwind_backtrace_with_ptrace_x86(tfd, tid, milist,at_fault);
+#elif __mips__
+    /* If stack unwinder fails, use the default solution to dump the stack
+    * content.
+    */
+    stack_depth = unwind_backtrace_with_ptrace_mips(tfd, tid, milist,at_fault);
+    /* The stack unwinder should at least unwind two levels of stack. If less
+     * level is seen we make sure at least pc and ra are dumped.
+     */
+    if (stack_depth < 2) {
+        dump_pc_and_ra(tfd, tid, milist, stack_depth, at_fault);
+    }
+
+    //    dump_randomization_base(tfd, at_fault);
+    dump_stack_and_code(tfd, tid, milist, stack_depth, sp_list, at_fault);
 #else
 #error "Unsupported architecture"
 #endif
@@ -653,7 +669,9 @@ static void handle_crashing_process(int fd)
             case SIGBUS:
             case SIGFPE:
             case SIGSEGV:
+#ifdef SIGSTKFLT
             case SIGSTKFLT:
+#endif
             case SIGPIPE:
 	    {
                 XLOG("stopped -- fatal signal\n");
@@ -727,7 +745,9 @@ int main()
     signal(SIGBUS, SIG_DFL);
     signal(SIGFPE, SIG_DFL);
     signal(SIGSEGV, SIG_DFL);
+#ifdef SIGSTKFLT
     signal(SIGSTKFLT, SIG_DFL);
+#endif
     signal(SIGPIPE, SIG_DFL);
 
     logsocket = socket_local_client("logd",
