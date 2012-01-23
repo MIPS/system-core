@@ -51,7 +51,6 @@
 //__FBSDID("$FreeBSD: /repoman/r/ncvs/src/sys/arm/arm/disassem.c,v 1.2 2005/01/05 21:58:47 imp Exp $");
 #include <sys/param.h>
 #include <stdio.h>
-#include <stdarg.h>
 
 #include "disassem.h"
 #include "armreg.h"
@@ -299,7 +298,7 @@ static void disasm_insn_ldrhstrh(const disasm_interface_t *di, u_int insn,
 static void disasm_insn_ldcstc(const disasm_interface_t *di, u_int insn,
     u_int loc);
 static u_int disassemble_readword(u_int address);
-static void disassemble_printaddr(const disasm_interface_t *di, u_int address);
+static void disassemble_printaddr(u_int address);
 
 u_int
 disasm(const disasm_interface_t *di, u_int loc, int altfmt)
@@ -429,7 +428,7 @@ disasm(const disasm_interface_t *di, u_int loc, int altfmt)
 			branch = ((insn << 2) & 0x03ffffff);
 			if (branch & 0x02000000)
 				branch |= 0xfc000000;
-			di->di_printaddr(di, loc + 8 + branch);
+			di->di_printaddr(loc + 8 + branch);
 			break;
 		/* t - blx address */
 		case 't':
@@ -437,7 +436,7 @@ disasm(const disasm_interface_t *di, u_int loc, int altfmt)
 			    (insn >> 23 & 0x00000002);
 			if (branch & 0x02000000)
 				branch |= 0xfc000000;
-			di->di_printaddr(di, loc + 8 + branch);
+			di->di_printaddr(loc + 8 + branch);
 			break;
 		/* X - block transfer type */
 		case 'X':
@@ -624,7 +623,7 @@ disasm_insn_ldrstr(const disasm_interface_t *di, u_int insn, u_int loc)
 			loc += offset;
 		else
 			loc -= offset;
-		di->di_printaddr(di, loc + 8);
+		di->di_printaddr(loc + 8);
  	} else {
 		di->di_printf("[r%d", (insn >> 16) & 0x0f);
 		if ((insn & 0x03000fff) != 0x01000000) {
@@ -653,7 +652,7 @@ disasm_insn_ldrhstrh(const disasm_interface_t *di, u_int insn, u_int loc)
 			loc += offset;
 		else
 			loc -= offset;
-		di->di_printaddr(di, loc + 8);
+		di->di_printaddr(loc + 8);
  	} else {
 		di->di_printf("[r%d", (insn >> 16) & 0x0f);
 		if ((insn & 0x01400f0f) != 0x01400000) {
@@ -701,39 +700,19 @@ disassemble_readword(u_int address)
 }
 
 static void
-disassemble_printaddr(const disasm_interface_t *di, u_int address)
+disassemble_printaddr(u_int address)
 {
-	di->di_printf("0x%08x", address);
-}
-
-static char *sprintf_buffer;
-static int sprintf_buf_len;
-static void di_sprintf(const char* fmt, ...)
-{
-    int cnt;
-    va_list argp;
-    va_start(argp, fmt);
-    cnt = vsnprintf(sprintf_buffer, sprintf_buf_len, fmt, argp);
-    sprintf_buffer += cnt;
-    sprintf_buf_len -= cnt;
+	printf("0x%08x", address);
 }
 
 static const disasm_interface_t disassemble_di = {
-    disassemble_readword, disassemble_printaddr, printf
-};
-
-static const disasm_interface_t sprintf_disassemble_di = {
-    disassemble_readword, disassemble_printaddr, di_sprintf
+	disassemble_readword, disassemble_printaddr, printf
 };
 
 void
-disassemble(u_int address, char *di_buffer)
+disassemble(u_int address)
 {
-    if (di_buffer) {
-        sprintf_buffer = di_buffer;
-        sprintf_buf_len = 39;   // should be passed in
-        (void)disasm(&sprintf_disassemble_di, address, 0);
-    }
+
 	(void)disasm(&disassemble_di, address, 0);
 }
 

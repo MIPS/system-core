@@ -174,7 +174,7 @@ uint32_t ARMAssemblerInterface::reg_post(int Rm)
 // in the original ARM code. The above versions (without __), are now
 // virtual, and can be overridden in the MIPS code. But since these are 
 // needed at initialization time, they must be static. Not thrilled with 
-// this, be nice to find something cleaner....
+// this implementation, but it works...
 
 uint32_t ARMAssemblerInterface::__immed12_pre(int32_t immed12, int W)
 {

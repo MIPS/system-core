@@ -42,10 +42,9 @@ namespace android {
 #pragma mark ARMAssembler...
 #endif
 
-ARMAssembler::ARMAssembler(const sp<Assembly>& assembly, char* disassem_buf)
+ARMAssembler::ARMAssembler(const sp<Assembly>& assembly)
     :   ARMAssemblerInterface(),
-        mAssembly(assembly),
-        mDisassemblyBuffer(disassem_buf)    // FIXME: ugly option passing
+        mAssembly(assembly)
 {
     mBase = mPC = (uint32_t *)assembly->base();
     mDuration = ggl_system_time();
@@ -101,10 +100,7 @@ void ARMAssembler::disassemble(const char* name)
             printf("; %s\n", mComments.valueAt(comment));
         }
         printf("%08x:    %08x    ", int(i), int(i[0]));
-        
-        ::disassemble((u_int)i, mDisassemblyBuffer);
-        if (mDisassemblyBuffer) mDisassemblyBuffer += 40;   // FIXME: string size hard-code, 
-                                                            // lame interface overall
+        ::disassemble((u_int)i);
         i++;
     }
 }
@@ -196,11 +192,7 @@ int ARMAssembler::generate(const char* name)
 #endif
 
     char value[PROPERTY_VALUE_MAX];
-
-    // hack - plind
-    strcpy(value, "1");	// force property true
-    // property_get("debug.pf.disasm", value, "0");
-
+    property_get("debug.pf.disasm", value, "0");
     if (atoi(value) != 0) {
         printf(format, name, int(pc()-base()), base(), pc(), duration);
         disassemble(name);
@@ -213,9 +205,6 @@ uint32_t* ARMAssembler::pcForLabel(const char* label)
 {
     return mLabels.valueFor(label);
 }
-
-
-
 
 // ----------------------------------------------------------------------------
 
