@@ -36,7 +36,7 @@ namespace android {
 class ARMAssembler : public ARMAssemblerInterface
 {
 public:
-                ARMAssembler(const sp<Assembly>& assembly, char* disassem_buf = NULL);  // FIXME: ugly option passing
+                ARMAssembler(const sp<Assembly>& assembly);
     virtual     ~ARMAssembler();
 
     uint32_t*   base() const;
@@ -170,7 +170,6 @@ private:
     uint32_t*       mPC;
     uint32_t*       mPrologPC;
     int64_t         mDuration;
-    char*           mDisassemblyBuffer;
 #if defined(WITH_LIB_HARDWARE)
     bool            mQemuTracing;
 #endif

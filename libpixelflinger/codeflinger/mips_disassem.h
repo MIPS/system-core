@@ -46,7 +46,7 @@ extern "C" {
 #endif
 
 
-// probably should add an interface like this, but I have not ... :-(
+// could add an interface like this, but I have not
 // typedef struct {
 //  u_int   (*di_readword)(u_int);
 //  void    (*di_printaddr)(u_int); 

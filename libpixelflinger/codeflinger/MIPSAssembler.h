@@ -2,16 +2,16 @@
 **
 ** Copyright 2006, The Android Open Source Project
 **
-** Licensed under the Apache License, Version 2.0 (the "License"); 
-** you may not use this file except in compliance with the License. 
-** You may obtain a copy of the License at 
+** Licensed under the Apache License, Version 2.0 (the "License");
+** you may not use this file except in compliance with the License.
+** You may obtain a copy of the License at
 **
-**     http://www.apache.org/licenses/LICENSE-2.0 
+**     http://www.apache.org/licenses/LICENSE-2.0
 **
-** Unless required by applicable law or agreed to in writing, software 
-** distributed under the License is distributed on an "AS IS" BASIS, 
-** WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
-** See the License for the specific language governing permissions and 
+** Unless required by applicable law or agreed to in writing, software
+** distributed under the License is distributed on an "AS IS" BASIS,
+** WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+** See the License for the specific language governing permissions and
 ** limitations under the License.
 */
 
@@ -68,7 +68,7 @@ public:                                                                         
     virtual uint32_t    reg_rrx(int Rm);
     virtual uint32_t    reg_reg(int Rm, int type, int Rs);
 
-    // addressing modes... 
+    // addressing modes...
     // LDR(B)/STR(B)/PLD
     // (immediate and Rm can be negative, which indicates U=0)
     virtual uint32_t    immed12_pre(int32_t immed12, int W=0);
@@ -82,10 +82,10 @@ public:                                                                         
     virtual uint32_t    immed8_post(int32_t immed8);
     virtual uint32_t    reg_pre(int Rm, int W=0);
     virtual uint32_t    reg_post(int Rm);
-    
 
 
-    
+
+
     virtual void    dataProcessing(int opcode, int cc, int s,
                                 int Rd, int Rn,
                                 uint32_t Op2);
@@ -121,7 +121,7 @@ public:                                                                         
                 int Rn, uint32_t offset = 0);
     virtual void LDRH (int cc, int Rd,
                 int Rn, uint32_t offset = 0);
-    virtual void LDRSB(int cc, int Rd, 
+    virtual void LDRSB(int cc, int Rd,
                 int Rn, uint32_t offset = 0);
     virtual void LDRSH(int cc, int Rd,
                 int Rn, uint32_t offset = 0);
@@ -168,46 +168,45 @@ public:                                                                         
     int         mArmInstrCount;
 
     int         mInum;      // current arm instuction number (0..n)
-    uint32_t**  mArmPC;     // array: PC for 1st mips instr of 
+    uint32_t**  mArmPC;     // array: PC for 1st mips instr of
                             //      each translated ARM instr
 
 
 private:
     ArmToMipsAssembler(const ArmToMipsAssembler& rhs);
     ArmToMipsAssembler& operator = (const ArmToMipsAssembler& rhs);
-    
-    
-    void init_conditional_labels(void);                             // FIXME: this is so freakin lame
-    
+
+    void init_conditional_labels(void);
+
     void protectConditionalOperands(int Rd);
-    
-    // FIXME: reg__tmp set to MIPS AT, reg 1 (symbol definition should be moved above this)
+
+    // reg__tmp set to MIPS AT, reg 1
     int dataProcAdrModes(int op, int& source, bool sign = false, int reg_tmp = 1);
 
     sp<Assembly>        mAssembly;
     MIPSAssembler*      mMips;
-    
+
 
     enum misc_constants_t {
-        MAX_INSTUCTIONS = 500  // FIXME: confusion on if this is Arm or Mips
+        ARM_MAX_INSTUCTIONS = 512  // based on ASSEMBLY_SCRATCH_SIZE
     };
-    
-    enum { 
-        SRC_REG = 0, 
-        SRC_IMM, 
-        SRC_ERROR = -1 
+
+    enum {
+        SRC_REG = 0,
+        SRC_IMM,
+        SRC_ERROR = -1
     };
-    
+
     enum addr_modes {
         // start above the range of legal mips reg #'s (0-31)
-        AMODE_REG = 0x20, 
+        AMODE_REG = 0x20,
         AMODE_IMM, AMODE_REG_IMM,               // for data processing
         AMODE_IMM_12_PRE, AMODE_IMM_12_POST,    // for load/store
         AMODE_REG_SCALE_PRE, AMODE_IMM_8_PRE,
         AMODE_IMM_8_POST, AMODE_REG_PRE,
         AMODE_UNSUPPORTED
     };
-    
+
     struct addr_mode_t {    // address modes for current ARM instruction
         int         reg;
         int         stype;
@@ -228,9 +227,6 @@ private:
         char        label[100][10];
     } cond;
 
-
-
-
 };
 
 
@@ -240,10 +236,10 @@ private:
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
-// this is the basic MIPS assembler, which just creates the opcodes in memory
-// all the more complicated work is done in ArmToMipsAssember above
+// This is the basic MIPS assembler, which just creates the opcodes in memory.
+// All the more complicated work is done in ArmToMipsAssember above.
 
-class MIPSAssembler 
+class MIPSAssembler
 {
 public:
                 MIPSAssembler(const sp<Assembly>& assembly, ArmToMipsAssembler *parent);
@@ -252,7 +248,7 @@ public:
     uint32_t*   base() const;
     uint32_t*   pc() const;
     void        reset();
-    
+
     void        disassemble(const char* name);
 
     void        prolog();
@@ -260,7 +256,7 @@ public:
     int         generate(const char* name);
     void        comment(const char* string);
     void        label(const char* string);
-    
+
     // valid only after generate() has been called
     uint32_t*   pcForLabel(const char* label);
 
@@ -272,7 +268,7 @@ public:
 #if 0
 #pragma mark -
 #pragma mark Arithmetic...
-#endif 
+#endif
 
     void ADDU(int Rd, int Rs, int Rt);
     void ADDIU(int Rt, int Rs, int16_t imm);
@@ -293,7 +289,7 @@ public:
 #if 0
 #pragma mark -
 #pragma mark Comparisons...
-#endif 
+#endif
 
     void SLT(int Rd, int Rs, int Rt);
     void SLTI(int Rt, int Rs, int16_t imm);
@@ -304,8 +300,8 @@ public:
 #if 0
 #pragma mark -
 #pragma mark Logical...
-#endif 
-    
+#endif
+
     void AND(int Rd, int Rs, int Rt);
     void ANDI(int Rd, int Rs, uint16_t imm);
     void OR(int Rd, int Rs, int Rt);
@@ -334,7 +330,7 @@ public:
 #if 0
 #pragma mark -
 #pragma mark Load/store...
-#endif 
+#endif
 
     void LW(int Rt, int Rbase, int16_t offset);
     void SW(int Rt, int Rbase, int16_t offset);
@@ -349,7 +345,7 @@ public:
 #if 0
 #pragma mark -
 #pragma mark Register moves...
-#endif 
+#endif
 
     void MOVE(int Rd, int Rs);
     void MOVN(int Rd, int Rs, int Rt);
@@ -362,7 +358,7 @@ public:
 #if 0
 #pragma mark -
 #pragma mark Branch...
-#endif 
+#endif
 
     void B(const char* label);
     void BEQ(int Rs, int Rt, const char* label);
@@ -372,12 +368,12 @@ public:
     void BLEZ(int Rs, const char* label);
     void BLTZ(int Rs, const char* label);
     void JR(int Rs);
-    
-    
+
+
 #if 0
 #pragma mark -
 #pragma mark Synthesized Branch...
-#endif 
+#endif
 
     // synthetic variants of above (using slt & friends)
     void BEQZ(int Rs, const char* label);
@@ -394,7 +390,7 @@ public:
 #if 0
 #pragma mark -
 #pragma mark Misc...
-#endif 
+#endif
 
     void NOP(void);
     void NOP2(void);
@@ -405,13 +401,8 @@ public:
 
 
 private:
-//                 MIPSAssembler(const MIPSAssembler& rhs);
-//                 MIPSAssembler& operator = (const MIPSAssembler& rhs);
-
     void string_detab(char *s);
     void string_pad(char *s, int padded_len);
-    
-
 
     ArmToMipsAssembler *mParent;
     sp<Assembly>    mAssembly;
@@ -422,7 +413,7 @@ private:
 #if defined(WITH_LIB_HARDWARE)
     bool            mQemuTracing;
 #endif
-    
+
     struct branch_target_t {
         inline branch_target_t() : label(0), pc(0) { }
         inline branch_target_t(const char* l, uint32_t* p)
@@ -430,7 +421,7 @@ private:
         const char* label;
         uint32_t*   pc;
     };
-    
+
     Vector<branch_target_t>                 mBranchTargets;
     KeyedVector< const char*, uint32_t* >   mLabels;
     KeyedVector< uint32_t*, const char* >   mLabelsInverseMapping;
@@ -469,7 +460,7 @@ private:
         mfhi_fn, mthi_fn, mflo_fn, mtlo_fn,         // 10
         dsllv_fn, rsrv_spec_2, dsrlv_fn, dsrav_fn,
         mult_fn, multu_fn, div_fn, divu_fn,         // 18
-        dmult_fn, dmultu_fn, ddiv_fn, ddivu_fn, 
+        dmult_fn, dmultu_fn, ddiv_fn, ddivu_fn,
         add_fn, addu_fn, sub_fn, subu_fn,           // 20
         and_fn, or_fn, xor_fn, nor_fn,
         rsrv_spec_3, rsrv_spec_4, slt_fn, sltu_fn,  // 28
@@ -483,7 +474,7 @@ private:
     // func field for spec2 opcode
     enum func_spec2_op {
         madd_fn, maddu_fn, mul_fn, rsrv_spec2_3,
-        msub_fn, msubu_fn, 
+        msub_fn, msubu_fn,
         clz_fn = 0x20, clo_fn,
         dclz_fn = 0x24, dclo_fn,
         sdbbp_fn = 0x3f
@@ -504,7 +495,7 @@ private:
         seb_fn = 0x10,
         seh_fn = 0x18
     };
-    
+
     // rt field of regimm opcodes.
     enum regimm_fn {
         bltz_fn, bgez_fn, bltzl_fn, bgezl_fn,
@@ -512,7 +503,7 @@ private:
         tgei_fn, tgeiu_fn, tlti_fn, tltiu_fn,
         teqi_fn, rsrv_ri_fn_0d, tnei_fn, rsrv_ri_fn0f,
         bltzal_fn, bgezal_fn, bltzall_fn, bgezall_fn,
-        bposge32_fn= 0x1c, 
+        bposge32_fn= 0x1c,
         synci_fn = 0x1f
     };
 
@@ -538,14 +529,14 @@ private:
         // mask values
         MSK_16       = 0xffff,
 
-    
+
         CACHEOP_SHF  = 18,
         CACHESEL_SHF = 16,
     };
 };
 
 enum mips_regnames {
-    R_zero = 0,  
+    R_zero = 0,
             R_at,   R_v0,   R_v1,   R_a0,   R_a1,   R_a2,   R_a3,
     R_t0,   R_t1,   R_t2,   R_t3,   R_t4,   R_t5,   R_t6,   R_t7,
     R_s0,   R_s1,   R_s2,   R_s3,   R_s4,   R_s5,   R_s6,   R_s7,

@@ -1,40 +1,57 @@
 /* libs/pixelflinger/codeflinger/MIPSAssembler.cpp
 **
-** some license header junk should probably go here
+** Copyright 2006, The Android Open Source Project
+**
+** Licensed under the Apache License, Version 2.0 (the "License");
+** you may not use this file except in compliance with the License.
+** You may obtain a copy of the License at
+**
+**     http://www.apache.org/licenses/LICENSE-2.0
+**
+** Unless required by applicable law or agreed to in writing, software
+** distributed under the License is distributed on an "AS IS" BASIS,
+** WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+** See the License for the specific language governing permissions and
+** limitations under the License.
 */
 
 
 /* MIPS assembler and ARM->MIPS assembly translator
-** 
+**
+** The approach is to leaves the GGLAssembler and associated files largely
+** un-changed, still utilizing all Arm instruction generation. Via the
+** ArmToMipsAssembler (subclassed from ArmAssemblerInterface) each Arm
+** instruction is translated to one or more Mips instructions as necessary. This
+** is clearly less efficient than a direct implementation within the
+** GGLAssembler, but is far cleaner, more maintainable, and has yielded very
+** significant performance gains on Mips compared to the generic pixel pipeline.
+**
+**
+** GGLAssembler changes
+**
+** - The register allocator has been modified to remap Arm registers 0-15 to mips
+** registers 2-17. Mips register 0 cannot be used as general-purpose register,
+** and register 1 has traditional uses as a short-term temporary.
+**
+** - Added some early bailouts for OUT_OF_REGISTERS in texturing.cpp,
+** load_store.cpp, and GGLAssembler.cpp, since this is no longer fatal, and can
+** be retried at lower optimization level.
+**
+** - Added some macros to support big-endian byte-order, which do not expand on
+** Arm.
+**
+**
+** ARMAssembler and ARMAssemblerInterface changes
+**
+** Added REV and REV16 instructions to support big-endian byte order (only used
+** on mips, however).
+**
+** Refactored address-mode static functions (imm(), reg_imm(), imm12_pre(), etc.)
+** to virtual so they can be overridden in MIPSAssembler. (This required
+** duplicating 2 of these as static functions so they could be used as static
+** initializers).
 */
 
-/*
-* ToDo:
-*
-* URGENT:
-*   - Fix register allocator (offset by 2), and cleanup the HACKs in disassem to print funny names
-*   - there is more ARM-specific assembly in include/private/pixelflinger/ggl_fixed.h
-*       - will have to add in the mips-equiv code there (also t32cb16blend.S)
-*   - ARM-Specific code in CodeCache, for cache flush
-*   - Clearly document sketchy assumptions like register lifetime from CMP (or S-bit) to the user
-*       of that condition.
-*
-* Other:
-*   - add seh and seb to mips disassembler
-*   - generate the version-specific defines for mips32, mips32r2, mips_dsp, etc.
-*   - make unsupported features (e.g., AMODE_UNSUPPORTED) cause exception or assert-fail
-*   - Make MIPSAssember::mPC public/protected, so I can access via ptr, rather than pc()
-*   - Review the signed/unsigned issues with ADD & other arithmetics
-*   - Consider how to do conditional stuff - S bit, flags, carry, etc.
-*   - Revisit ARMAssemnler interface, proxy, etc, to reduce number of changes in those files....
-*/
-
-/*
-* Performance questions:
-*   - Forward branch around a move vs. MOVZ/MOVN
-*   - BGEZ(Rs, offset) vs. BGE(Rs, zero, offset)
-*
-*/
 
 #define LOG_TAG "MIPSAssembler"
 
@@ -53,29 +70,14 @@
 #include "codeflinger/CodeCache.h"
 #include "codeflinger/mips_disassem.h"
 
+#define printf LOGW
 
-// macros and other hideous constructions.....
-
-#if 0
-#define DBG_PRINT(...) printf(__VA_ARGS__)
-#else
-#define DBG_PRINT(...)
-#endif
-
-
+// Choose MIPS arch variant following gcc flags
 #if defined(__mips__) && __mips==32 && __mips_isa_rev>=2
 #define mips32r2 1
 #else
 #define mips32r2 0
 #endif
-
-// standalone code uses printf, must do logging in android
-#ifndef PFTEST
-#define printf LOGW
-#endif
-
-
-
 
 
 #define NOT_IMPLEMENTED()  LOG_ALWAYS_FATAL("Arm instruction %s not yet implemented\n", __func__)
@@ -92,24 +94,18 @@ namespace android {
 #pragma mark ArmToMipsAssembler...
 #endif
 
-
-
-ArmToMipsAssembler::ArmToMipsAssembler(const sp<Assembly>& assembly, char *abuf, int linesz, int instr_count)
+ArmToMipsAssembler::ArmToMipsAssembler(const sp<Assembly>& assembly,
+                                       char *abuf, int linesz, int instr_count)
     :   ARMAssemblerInterface(),
-        mArmDisassemblyBuffer(abuf), // FIXME: lame interface from hell ... has to get passed better
+        mArmDisassemblyBuffer(abuf),
         mArmLineLength(linesz),
         mArmInstrCount(instr_count),
         mInum(0),
         mAssembly(assembly)
 {
     mMips = new MIPSAssembler(assembly, this);
-    mArmPC = (uint32_t **) malloc(MAX_INSTUCTIONS * sizeof(uint32_t *));
+    mArmPC = (uint32_t **) malloc(ARM_MAX_INSTUCTIONS * sizeof(uint32_t *));
     init_conditional_labels();
-    
-//     mDuration = ggl_system_time();
-// #if defined(WITH_LIB_HARDWARE)
-//     mQemuTracing = true;
-// #endif
 }
 
 ArmToMipsAssembler::~ArmToMipsAssembler()
@@ -170,11 +166,10 @@ void ArmToMipsAssembler::init_conditional_labels()
 #pragma mark Prolog/Epilog & Generate...
 #endif
 
-
 void ArmToMipsAssembler::prolog()
 {
     mArmPC[mInum++] = pc();  // save starting PC for this instr
-    
+
     mMips->ADDIU(R_sp, R_sp, -(5 * 4));
     mMips->SW(R_s0, R_sp, 0);
     mMips->SW(R_s1, R_sp, 4);
@@ -182,8 +177,6 @@ void ArmToMipsAssembler::prolog()
     mMips->SW(R_s3, R_sp, 12);
     mMips->SW(R_s4, R_sp, 16);
     mMips->MOVE(R_v0, R_a0);    // move context * passed in a0 to v0 (arm r0)
-                                // optimize this out later
-    
 }
 
 void ArmToMipsAssembler::epilog(uint32_t touched)
@@ -197,7 +190,7 @@ void ArmToMipsAssembler::epilog(uint32_t touched)
     mMips->LW(R_s4, R_sp, 16);
     mMips->ADDIU(R_sp, R_sp, (5 * 4));
     mMips->JR(R_ra);
-    
+
 }
 
 int ArmToMipsAssembler::generate(const char* name)
@@ -238,8 +231,6 @@ bool ArmToMipsAssembler::isValidImmediate(uint32_t immediate)
     return true;
 }
 
-
-
 uint32_t ArmToMipsAssembler::imm(uint32_t immediate)
 {
     // printf("immediate value %08x at pc %08x\n", immediate, (int)pc());
@@ -262,15 +253,13 @@ uint32_t ArmToMipsAssembler::reg_rrx(int Rm)
 }
 
 uint32_t ArmToMipsAssembler::reg_reg(int Rm, int type, int Rs)
-{   
+{
     // reg_reg mode is not used in the GLLAssember code at this time
     return AMODE_UNSUPPORTED;
 }
 
 
-
-
-// addressing modes... 
+// addressing modes...
 // LDR(B)/STR(B)/PLD (immediate and Rm can be negative, which indicate U=0)
 uint32_t ArmToMipsAssembler::immed12_pre(int32_t immed12, int W)
 {
@@ -292,10 +281,10 @@ uint32_t ArmToMipsAssembler::immed12_post(int32_t immed12)
     return AMODE_IMM_12_POST;
 }
 
-uint32_t ArmToMipsAssembler::reg_scale_pre(int Rm, int type, 
+uint32_t ArmToMipsAssembler::reg_scale_pre(int Rm, int type,
         uint32_t shift, int W)
 {
-    LOG_ALWAYS_FATAL_IF(W | type | shift, "reg_scale_pre adv modes not yet implemented");      // FIXME
+    LOG_ALWAYS_FATAL_IF(W | type | shift, "reg_scale_pre adv modes not yet implemented");
 
     amode.reg = Rm;
     // amode.stype = type;      // more advanced modes not used in GGLAssembler yet
@@ -310,16 +299,13 @@ uint32_t ArmToMipsAssembler::reg_scale_post(int Rm, int type, uint32_t shift)
     return AMODE_UNSUPPORTED;
 }
 
-
-
-
 // LDRH/LDRSB/LDRSH/STRH (immediate and Rm can be negative, which indicate U=0)
 uint32_t ArmToMipsAssembler::immed8_pre(int32_t immed8, int W)
 {
     // uint32_t offset = abs(immed8);
 
     LOG_ALWAYS_FATAL("adr mode immed8_pre not yet implemented\n");
-    
+
     LOG_ALWAYS_FATAL_IF(abs(immed8) >= 0x100,
                         "LDRH/LDRSB/LDRSH/STRH immediate too big (%08x)",
                         immed8);
@@ -339,7 +325,7 @@ uint32_t ArmToMipsAssembler::immed8_post(int32_t immed8)
 
 uint32_t ArmToMipsAssembler::reg_pre(int Rm, int W)
 {
-    LOG_ALWAYS_FATAL_IF(W, "reg_pre writeback not yet implemented");          // FIXME
+    LOG_ALWAYS_FATAL_IF(W, "reg_pre writeback not yet implemented");
     amode.reg = Rm;
     return AMODE_REG_PRE;
 }
@@ -352,9 +338,6 @@ uint32_t ArmToMipsAssembler::reg_post(int Rm)
 
 
 
-
-
-
 // ----------------------------------------------------------------------------
 
 #if 0
@@ -364,7 +347,7 @@ uint32_t ArmToMipsAssembler::reg_post(int Rm)
 
 
 static const char * const dpOpNames[] = {
-    "AND", "EOR", "SUB", "RSB", "ADD", "ADC", "SBC", "RSC", 
+    "AND", "EOR", "SUB", "RSB", "ADD", "ADC", "SBC", "RSC",
     "TST", "TEQ", "CMP", "CMN", "ORR", "MOV", "BIC", "MVN"
 };
 
@@ -384,10 +367,9 @@ void ArmToMipsAssembler::protectConditionalOperands(int Rd)
     }
     if (cond.type == CMP_COND && Rd == cond.r2) {
         mMips->MOVE(R_cmp2, cond.r2);
-        cond.r2 = R_cmp2;        
+        cond.r2 = R_cmp2;
     }
 }
-
 
 
 // interprets the addressing mode, and generates the common code
@@ -443,17 +425,17 @@ void ArmToMipsAssembler::dataProcessing(int opcode, int cc,
         int s, int Rd, int Rn, uint32_t Op2)
 {
     int src;    // src is modified by dataProcAdrModes() - passed as int&
-    
-    
+
+
     if (cc != AL) {
         protectConditionalOperands(Rd);
         // the branch tests register(s) set by prev CMP or instr with 'S' bit set
         // inverse the condition to jump past this conditional instruction
-        ArmToMipsAssembler::B(cc^1, cond.label[++cond.labelnum]);   // FIXME: fixed size of label array
+        ArmToMipsAssembler::B(cc^1, cond.label[++cond.labelnum]);
     } else {
         mArmPC[mInum++] = pc();  // save starting PC for this instr
     }
-    
+
     switch (opcode) {
     case opAND:
         if (dataProcAdrModes(Op2, src) == SRC_REG) {
@@ -463,7 +445,6 @@ void ArmToMipsAssembler::dataProcessing(int opcode, int cc,
         }
         break;
 
-
     case opADD:
         // set "signed" to true for adr modes
         if (dataProcAdrModes(Op2, src, true) == SRC_REG) {
@@ -472,7 +453,7 @@ void ArmToMipsAssembler::dataProcessing(int opcode, int cc,
             mMips->ADDIU(Rd, Rn, src);
         }
         break;
-        
+
     case opSUB:
         // set "signed" to true for adr modes
         if (dataProcAdrModes(Op2, src, true) == SRC_REG) {
@@ -481,7 +462,7 @@ void ArmToMipsAssembler::dataProcessing(int opcode, int cc,
             mMips->SUBIU(Rd, Rn, src);
         }
         break;
-    
+
     case opEOR:
         if (dataProcAdrModes(Op2, src) == SRC_REG) {
             mMips->XOR(Rd, Rn, src);
@@ -497,26 +478,26 @@ void ArmToMipsAssembler::dataProcessing(int opcode, int cc,
             mMips->ORI(Rd, Rn, src);
         }
         break;
-    
+
     case opBIC:
         if (dataProcAdrModes(Op2, src) == SRC_IMM) {
             // if we are 16-bit imnmediate, load to AT reg
-            mMips->ORI(R_at, 0, src);   
+            mMips->ORI(R_at, 0, src);
             src = R_at;
-        } 
+        }
         mMips->NOT(R_at, src);
         mMips->AND(Rd, Rn, R_at);
         break;
-    
+
     case opRSB:
         if (dataProcAdrModes(Op2, src) == SRC_IMM) {
             // if we are 16-bit imnmediate, load to AT reg
             mMips->ORI(R_at, 0, src);
             src = R_at;
-        } 
+        }
         mMips->SUBU(Rd, src, Rn);   // subu with the parameters reversed
         break;
-    
+
     case opMOV:
         if (Op2 < AMODE_REG) {  // op2 is reg # in this case
             mMips->MOVE(Rd, Op2);
@@ -578,7 +559,7 @@ void ArmToMipsAssembler::dataProcessing(int opcode, int cc,
             // adr mode RRX is not used in GGL Assembler at this time
             mMips->UNIMPL();
         }
-        mMips->NOR(Rd, Rd, 0);     // NOT is NOR with 0             
+        mMips->NOR(Rd, Rd, 0);     // NOT is NOR with 0
         break;
 
     case opCMP:
@@ -589,7 +570,7 @@ void ArmToMipsAssembler::dataProcessing(int opcode, int cc,
         // pattern of multiple conditional instructions from same CMP _is_ used
         // in GGL-Assembler)
         //
-        // For now, if a conditional instr overwrites the operands, we will 
+        // For now, if a conditional instr overwrites the operands, we will
         // move them to dedicated temp regs. This is ugly, and inefficient,
         // and should be optimized.
         //
@@ -605,10 +586,10 @@ void ArmToMipsAssembler::dataProcessing(int opcode, int cc,
             mMips->ORI(R_cmp2, R_zero, src);
             cond.r2 = R_cmp2;
         }
-        
+
         break;
 
-        
+
     case opTST:
     case opTEQ:
     case opCMN:
@@ -618,7 +599,7 @@ void ArmToMipsAssembler::dataProcessing(int opcode, int cc,
         mMips->UNIMPL(); // currently unused in GGL Assembler code
         break;
     }
-    
+
     if (cc != AL) {
         mMips->label(cond.label[cond.labelnum]);
     }
@@ -630,7 +611,6 @@ void ArmToMipsAssembler::dataProcessing(int opcode, int cc,
 
 
 
-
 #if 0
 #pragma mark -
 #pragma mark Multiply...
@@ -639,9 +619,9 @@ void ArmToMipsAssembler::dataProcessing(int opcode, int cc,
 // multiply, accumulate
 void ArmToMipsAssembler::MLA(int cc, int s,
         int Rd, int Rm, int Rs, int Rn) {
-    
+
     mArmPC[mInum++] = pc();  // save starting PC for this instr
-    
+
     mMips->MUL(R_at, Rm, Rs);
     mMips->ADDU(Rd, R_at, Rn);
     if (s) {
@@ -720,6 +700,8 @@ void ArmToMipsAssembler::SMUAL(int cc, int s,
     }
 }
 
+
+
 #if 0
 #pragma mark -
 #pragma mark Branches...
@@ -732,7 +714,7 @@ void ArmToMipsAssembler::B(int cc, const char* label)
     mArmPC[mInum++] = pc();
     if (cond.type == SBIT_COND) { cond.r2 = R_zero; }
     // printf("sBRANCH: cc: %x, type %d, r1: %d, r2: %d -----\n", cc, cond.type, cond.r1, cond.r2);
-        
+
     switch(cc) {
         case EQ: mMips->BEQ(cond.r1, cond.r2, label); break;
         case NE: mMips->BNE(cond.r1, cond.r2, label); break;
@@ -750,8 +732,8 @@ void ArmToMipsAssembler::B(int cc, const char* label)
         case AL: mMips->B(label); break;
         case NV: /* B Never - no instruction */ break;
 
-        case VS: 
-        case VC: 
+        case VS:
+        case VC:
         default:
             LOG_ALWAYS_FATAL("Unsupported cc: %02x\n", cc);
             break;
@@ -764,7 +746,6 @@ void ArmToMipsAssembler::BL(int cc, const char* label)
     LOG_ALWAYS_FATAL("branch-and-link not supported yet\n");
     mArmPC[mInum++] = pc();
 }
-
 
 // no use for Branches with integer PC, but they're in the Interface class ....
 void ArmToMipsAssembler::B(int cc, uint32_t* to_pc)
@@ -785,25 +766,27 @@ void ArmToMipsAssembler::BX(int cc, int Rn)
     mArmPC[mInum++] = pc();
 }
 
+
+
 #if 0
 #pragma mark -
 #pragma mark Data Transfer...
 #endif
 
-// data transfert...
-void ArmToMipsAssembler::LDR(int cc, int Rd, int Rn, uint32_t offset) 
+// data transfer...
+void ArmToMipsAssembler::LDR(int cc, int Rd, int Rn, uint32_t offset)
 {
     mArmPC[mInum++] = pc();
     // work-around for ARM default address mode of immed12_pre(0)
-    if (offset > AMODE_UNSUPPORTED) offset = 0; 
+    if (offset > AMODE_UNSUPPORTED) offset = 0;
     switch (offset) {
         case 0:
             amode.value = 0;
             amode.writeback = 0;
             // fall thru to next case ....
         case AMODE_IMM_12_PRE:
-            if (Rn == ARMAssemblerInterface::SP) {    // FIXME: too kludgy ?
-                Rn = R_sp;      // convert STR thru Arm SP to STR thru Mips SP
+            if (Rn == ARMAssemblerInterface::SP) {
+                Rn = R_sp;      // convert LDR via Arm SP to LW via Mips SP
             }
             mMips->LW(Rd, Rn, amode.value);
             if (amode.writeback) {      // OPTIONAL writeback on pre-index mode
@@ -811,7 +794,7 @@ void ArmToMipsAssembler::LDR(int cc, int Rd, int Rn, uint32_t offset)
             }
             break;
         case AMODE_IMM_12_POST:
-            if (Rn == ARMAssemblerInterface::SP) {    // FIXME: too kludgy ?
+            if (Rn == ARMAssemblerInterface::SP) {
                 Rn = R_sp;      // convert STR thru Arm SP to STR thru Mips SP
             }
             mMips->LW(Rd, Rn, 0);
@@ -825,13 +808,11 @@ void ArmToMipsAssembler::LDR(int cc, int Rd, int Rn, uint32_t offset)
     }
 }
 
-
-
-void ArmToMipsAssembler::LDRB(int cc, int Rd, int Rn, uint32_t offset) 
+void ArmToMipsAssembler::LDRB(int cc, int Rd, int Rn, uint32_t offset)
 {
     mArmPC[mInum++] = pc();
     // work-around for ARM default address mode of immed12_pre(0)
-    if (offset > AMODE_UNSUPPORTED) offset = 0; 
+    if (offset > AMODE_UNSUPPORTED) offset = 0;
     switch (offset) {
         case 0:
             amode.value = 0;
@@ -856,20 +837,19 @@ void ArmToMipsAssembler::LDRB(int cc, int Rd, int Rn, uint32_t offset)
 
 }
 
-
-void ArmToMipsAssembler::STR(int cc, int Rd, int Rn, uint32_t offset) 
+void ArmToMipsAssembler::STR(int cc, int Rd, int Rn, uint32_t offset)
 {
     mArmPC[mInum++] = pc();
     // work-around for ARM default address mode of immed12_pre(0)
-    if (offset > AMODE_UNSUPPORTED) offset = 0; 
+    if (offset > AMODE_UNSUPPORTED) offset = 0;
     switch (offset) {
         case 0:
             amode.value = 0;
             amode.writeback = 0;
             // fall thru to next case ....
         case AMODE_IMM_12_PRE:
-            if (Rn == ARMAssemblerInterface::SP) {      // FIXME: too kludgy ?
-                Rn = R_sp;  // convert STR thru Arm SP to STR thru Mips SP
+            if (Rn == ARMAssemblerInterface::SP) {
+                Rn = R_sp;  // convert STR thru Arm SP to SW thru Mips SP
             }
             if (amode.writeback) {      // OPTIONAL writeback on pre-index mode
                 // If we will writeback, then update the index reg, then store.
@@ -892,11 +872,12 @@ void ArmToMipsAssembler::STR(int cc, int Rd, int Rn, uint32_t offset)
             break;
     }
 }
-void ArmToMipsAssembler::STRB(int cc, int Rd, int Rn, uint32_t offset) 
+
+void ArmToMipsAssembler::STRB(int cc, int Rd, int Rn, uint32_t offset)
 {
     mArmPC[mInum++] = pc();
     // work-around for ARM default address mode of immed12_pre(0)
-    if (offset > AMODE_UNSUPPORTED) offset = 0; 
+    if (offset > AMODE_UNSUPPORTED) offset = 0;
     switch (offset) {
         case 0:
             amode.value = 0;
@@ -920,11 +901,11 @@ void ArmToMipsAssembler::STRB(int cc, int Rd, int Rn, uint32_t offset)
     }
 }
 
-void ArmToMipsAssembler::LDRH(int cc, int Rd, int Rn, uint32_t offset) 
+void ArmToMipsAssembler::LDRH(int cc, int Rd, int Rn, uint32_t offset)
 {
     mArmPC[mInum++] = pc();
     // work-around for ARM default address mode of immed8_pre(0)
-    if (offset > AMODE_UNSUPPORTED) offset = 0; 
+    if (offset > AMODE_UNSUPPORTED) offset = 0;
     switch (offset) {
         case 0:
             amode.value = 0;
@@ -948,27 +929,25 @@ void ArmToMipsAssembler::LDRH(int cc, int Rd, int Rn, uint32_t offset)
     }
 }
 
-
-
-void ArmToMipsAssembler::LDRSB(int cc, int Rd, int Rn, uint32_t offset) 
+void ArmToMipsAssembler::LDRSB(int cc, int Rd, int Rn, uint32_t offset)
 {
     mArmPC[mInum++] = pc();
     mMips->NOP2();
     NOT_IMPLEMENTED();
 }
 
-void ArmToMipsAssembler::LDRSH(int cc, int Rd, int Rn, uint32_t offset) 
+void ArmToMipsAssembler::LDRSH(int cc, int Rd, int Rn, uint32_t offset)
 {
     mArmPC[mInum++] = pc();
     mMips->NOP2();
     NOT_IMPLEMENTED();
 }
 
-void ArmToMipsAssembler::STRH(int cc, int Rd, int Rn, uint32_t offset) 
+void ArmToMipsAssembler::STRH(int cc, int Rd, int Rn, uint32_t offset)
 {
     mArmPC[mInum++] = pc();
     // work-around for ARM default address mode of immed8_pre(0)
-    if (offset > AMODE_UNSUPPORTED) offset = 0; 
+    if (offset > AMODE_UNSUPPORTED) offset = 0;
     switch (offset) {
         case 0:
             amode.value = 0;
@@ -992,6 +971,8 @@ void ArmToMipsAssembler::STRH(int cc, int Rd, int Rn, uint32_t offset)
     }
 }
 
+
+
 #if 0
 #pragma mark -
 #pragma mark Block Data Transfer...
@@ -1000,7 +981,7 @@ void ArmToMipsAssembler::STRH(int cc, int Rd, int Rn, uint32_t offset)
 // block data transfer...
 void ArmToMipsAssembler::LDM(int cc, int dir,
         int Rn, int W, uint32_t reg_list)
-{   //                    ED FD EA FA      IB IA DB DA
+{   //                        ED FD EA FA      IB IA DB DA
     // const uint8_t P[8] = { 1, 0, 1, 0,      1, 0, 1, 0 };
     // const uint8_t U[8] = { 1, 1, 0, 0,      1, 1, 0, 0 };
     // *mPC++ = (cc<<28) | (4<<25) | (uint32_t(P[dir])<<24) |
@@ -1012,7 +993,7 @@ void ArmToMipsAssembler::LDM(int cc, int dir,
 
 void ArmToMipsAssembler::STM(int cc, int dir,
         int Rn, int W, uint32_t reg_list)
-{   //                    FA EA FD ED      IB IA DB DA
+{   //                        FA EA FD ED      IB IA DB DA
     // const uint8_t P[8] = { 0, 1, 0, 1,      1, 0, 1, 0 };
     // const uint8_t U[8] = { 0, 0, 1, 1,      1, 1, 0, 0 };
     // *mPC++ = (cc<<28) | (4<<25) | (uint32_t(P[dir])<<24) |
@@ -1021,6 +1002,8 @@ void ArmToMipsAssembler::STM(int cc, int dir,
     mMips->NOP2();
     NOT_IMPLEMENTED();
 }
+
+
 
 #if 0
 #pragma mark -
@@ -1034,51 +1017,57 @@ void ArmToMipsAssembler::SWP(int cc, int Rn, int Rd, int Rm) {
     mMips->NOP2();
     NOT_IMPLEMENTED();
 }
+
 void ArmToMipsAssembler::SWPB(int cc, int Rn, int Rd, int Rm) {
     // *mPC++ = (cc<<28) | (2<<23) | (1<<22) | (Rn<<16) | (Rd << 12) | 0x90 | Rm;
     mArmPC[mInum++] = pc();
     mMips->NOP2();
     NOT_IMPLEMENTED();
 }
+
 void ArmToMipsAssembler::SWI(int cc, uint32_t comment) {
     // *mPC++ = (cc<<28) | (0xF<<24) | comment;
     mArmPC[mInum++] = pc();
     mMips->NOP2();
     NOT_IMPLEMENTED();
 }
+
 void ArmToMipsAssembler::REV(int cc, int Rd, int Rm)
 {
     mArmPC[mInum++] = pc();
     if (mips32r2) {
-	mMips->WSBH(Rd, Rm);
-	mMips->ROTR(Rd, Rd, 16);
+        mMips->WSBH(Rd, Rm);
+        mMips->ROTR(Rd, Rd, 16);
     } else { // Rd = Rm>>24 | Rm<<24 | (Rm>>8) & 0xff00 | ((Rm & 0xff00)<<8);
-	mMips->SRL(R_at, Rm, 24);
-	mMips->SLL(R_at2, Rm, 24);
-	mMips->OR(R_at, R_at, R_at2);
-	mMips->ANDI(R_at2, Rm, 0xff00);
-	mMips->SLL(R_at2, R_at2, 8);
-	mMips->OR(R_at, R_at, R_at2);
-	mMips->SRL(R_at2, Rm, 8);
-	mMips->ANDI(R_at2, R_at2, 0xff00);
-	mMips->OR(Rd, R_at, R_at2);
+        mMips->SRL(R_at, Rm, 24);
+        mMips->SLL(R_at2, Rm, 24);
+        mMips->OR(R_at, R_at, R_at2);
+        mMips->ANDI(R_at2, Rm, 0xff00);
+        mMips->SLL(R_at2, R_at2, 8);
+        mMips->OR(R_at, R_at, R_at2);
+        mMips->SRL(R_at2, Rm, 8);
+        mMips->ANDI(R_at2, R_at2, 0xff00);
+        mMips->OR(Rd, R_at, R_at2);
     }
 }
+
 void ArmToMipsAssembler::REV16(int cc, int Rd, int Rm)
 {
     mArmPC[mInum++] = pc();
     if (mips32r2) {
-	mMips->WSBH(Rd, Rm);
+        mMips->WSBH(Rd, Rm);
     } else {  // Rd = (Rm & 0x00ff00ff)<<8 | (Rm>>8) & 0x00ff00ff;
         mMips->LUI(R_at, 0x00ff);
         mMips->ORI(R_at, R_at, 0x00ff);
-	mMips->AND(R_at2, Rm, R_at);
+        mMips->AND(R_at2, Rm, R_at);
         mMips->SLL(R_at2, R_at2, 8);
         mMips->SRL(Rd, Rm, 8);
         mMips->AND(Rd, Rd, R_at);
         mMips->OR(Rd, Rd, R_at2);
     }
 }
+
+
 
 #if 0
 #pragma mark -
@@ -1183,7 +1172,7 @@ void ArmToMipsAssembler::SMULW(int cc, int y,
         // zero the bottom 16-bits, with 2 shifts, it can affect result
         mMips->SRL(R_at, Rs, 16);
         mMips->SLL(R_at, R_at, 16);
-        
+
     } else {
         // move low 16-bit half, to high half
         mMips->SLL(R_at, Rs, 16);
@@ -1191,7 +1180,6 @@ void ArmToMipsAssembler::SMULW(int cc, int y,
     mMips->MULT(Rm, R_at);
     mMips->MFHI(Rd);
 }
-
 
 // 16 x 16 signed multiply, accumulate: Rd = Rm{16} * Rs{16} + Rn
 void ArmToMipsAssembler::SMLA(int cc, int xy,
@@ -1252,25 +1240,16 @@ void ArmToMipsAssembler::SMLAW(int cc, int y,
     NOT_IMPLEMENTED();
 }
 
-// used by ARMv6 version of GGLAssembler::filter32 
+// used by ARMv6 version of GGLAssembler::filter32
 void ArmToMipsAssembler::UXTB16(int cc, int Rd, int Rm, int rotate)
 {
     mArmPC[mInum++] = pc();
-	
-	//Rd[31:16] := ZeroExtend((Rm ROR (8 * sh))[23:16]),
+
+    //Rd[31:16] := ZeroExtend((Rm ROR (8 * sh))[23:16]),
     //Rd[15:0] := ZeroExtend((Rm ROR (8 * sh))[7:0]). sh 0-3.
-	
-	mMips->ROTR(Rm, Rm, rotate*8);
-	mMips->AND(Rd, Rm, 0x00FF00FF);
-	
-	/*
-   1.
-      Rotate the value from Rm right by 0, 8, 16 or 24 bits.
-   2.
-      Do one of the following to the value obtained:
-          *
-            Extract bits[23:16] and bits[7:0] and sign or zero extend them to 16 bits. If the instruction is extend and add, add them to bits[31:16] and bits[15:0] respectively of Rn to form bits[31:16] and bits[15:0] of the result.	
-	*/
+
+    mMips->ROTR(Rm, Rm, rotate * 8);
+    mMips->AND(Rd, Rm, 0x00FF00FF);
 }
 
 void ArmToMipsAssembler::UBFX(int cc, int Rd, int Rn, int lsb, int width)
@@ -1279,17 +1258,17 @@ void ArmToMipsAssembler::UBFX(int cc, int Rd, int Rn, int lsb, int width)
      mArmPC[mInum++] = pc();
 
      mMips->NOP2();
-
      NOT_IMPLEMENTED();
 }
+
+
+
 
 
 #if 0
 #pragma mark -
 #pragma mark MIPS Assembler...
-#endif 
-
-
+#endif
 
 
 //**************************************************************************
@@ -1304,21 +1283,19 @@ void ArmToMipsAssembler::UBFX(int cc, int Rd, int Rn, int lsb, int width)
 ** To that end, there is no need for floating point, or priviledged
 ** instructions. This all runs in user space, no float.
 **
-** The syntax makes no attempt to be as complete as the assember, with 
+** The syntax makes no attempt to be as complete as the assember, with
 ** synthetic instructions, and automatic recognition of immedate operands
 ** (use the immediate form of the instruction), etc.
 **
-** We start with mips32r1, and may add r2 and dsp extensions if cpu 
+** We start with mips32r1, and may add r2 and dsp extensions if cpu
 ** supports. Decision will be made at compile time, based on gcc
 ** options. (makes sense since android will be built for a a specific
 ** device)
 */
 
 MIPSAssembler::MIPSAssembler(const sp<Assembly>& assembly, ArmToMipsAssembler *parent)
-    : mParent(parent), 
+    : mParent(parent),
     mAssembly(assembly)
-
-    
 {
     mBase = mPC = (uint32_t *)assembly->base();
     mDuration = ggl_system_time();
@@ -1326,7 +1303,6 @@ MIPSAssembler::MIPSAssembler(const sp<Assembly>& assembly, ArmToMipsAssembler *p
 
 MIPSAssembler::~MIPSAssembler()
 {
-    
 }
 
 
@@ -1360,7 +1336,7 @@ void MIPSAssembler::string_detab(char *s)
     char *t = temp;
     int len = 99;
     int i = TABSTOP;
-    
+
     while (*s && len-- > 0) {
         if (*s == '\n') { s++; continue; }
         if (*s == '\t') {
@@ -1391,7 +1367,7 @@ void MIPSAssembler::string_pad(char *s, int padded_len)
 void MIPSAssembler::disassemble(const char* name)
 {
     char di_buf[140];
-    
+
     if (name) {
         printf("%s:\n", name);
     }
@@ -1400,10 +1376,10 @@ void MIPSAssembler::disassemble(const char* name)
     // for (int i=0; i<mParent->mInum; ++i) {
     //     printf("arm inst %d at mips pc: %08x\n", i, (uint32_t) mParent->mArmPC[i]);
     // }
-    
+
     bool arm_disasm_fmt = (mParent->mArmDisassemblyBuffer == NULL) ? false : true;
-    
-    typedef char dstr[40];    
+
+    typedef char dstr[40];
     dstr *lines = (dstr *)mParent->mArmDisassemblyBuffer;
 
     if (mParent->mArmDisassemblyBuffer != NULL) {
@@ -1411,7 +1387,6 @@ void MIPSAssembler::disassemble(const char* name)
             string_detab(lines[i]);
         }
     }
-
 
     // iArm is an index to Arm instructions 1...n for this assembly sequence
     // mArmPC[iArm] holds the value of the Mips-PC for the first MIPS
@@ -1434,25 +1409,6 @@ void MIPSAssembler::disassemble(const char* name)
         string_detab(di_buf);
         string_pad(di_buf, 30);
         printf("%08x:    %08x    %s", uint32_t(mipsPC), uint32_t(*mipsPC), di_buf);
-        
-#ifdef PFTEST        
-        // print the Arm disassembly in sync with mips .....
-        if (mParent->mArmDisassemblyBuffer != NULL) {
-            if (mipsPC > mParent->mArmPC[iArm]) {
-                // if the Mips code got ahead of Arm, then skip a mips line
-                //printf("\n %53  s ( %-30s )", " ", lines[iArm++]);
-            }
-            if (mipsPC == mParent->mArmPC[iArm]) {
-                printf("( %-30s ) %08x", lines[iArm], (uint32_t) mParent->mArmPC[iArm]);
-                // there can be multiple arm instructions with same mips PC
-                // this skips past them
-                while (mipsPC == mParent->mArmPC[iArm]) {    
-                    iArm++;
-                }
-            }
-        }
-        printf("\n");   // FIXME: won't work on PFTEST properly
-#endif
         mipsPC++;
     }
 }
@@ -1469,15 +1425,14 @@ void MIPSAssembler::label(const char* theLabel)
 }
 
 
-
 void MIPSAssembler::prolog()
 {
-    // empty - done at caller
+    // empty - done in ArmToMipsAssembler
 }
 
 void MIPSAssembler::epilog(uint32_t touched)
 {
-    //empty - done in calling class
+    // empty - done in ArmToMipsAssembler
 }
 
 int MIPSAssembler::generate(const char* name)
@@ -1510,14 +1465,8 @@ int MIPSAssembler::generate(const char* name)
     char value[PROPERTY_VALUE_MAX];
     value[0] = '\0';
 
-    // hack - plind
-#ifdef PFTEST
-    strcpy(value, "1");	// force property true
-#else
     property_get("debug.pf.disasm", value, "0");
-    // strcpy(value, "1"); // force property true
-#endif    
-    
+
     if (atoi(value) != 0) {
         disassemble(name);
     }
@@ -1535,20 +1484,18 @@ uint32_t* MIPSAssembler::pcForLabel(const char* label)
 #if 0
 #pragma mark -
 #pragma mark Arithmetic...
-#endif 
+#endif
 
 void MIPSAssembler::ADDU(int Rd, int Rs, int Rt)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (addu_fn<<FUNC_SHF) 
+    *mPC++ = (spec_op<<OP_SHF) | (addu_fn<<FUNC_SHF)
                     | (Rs<<RS_SHF) | (Rt<<RT_SHF) | (Rd<<RD_SHF);
-    DBG_PRINT("%08x: %08x   addu %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rs, Rt);
 }
 
 // MD00086 pdf says this is: ADDIU rt, rs, imm -- they do not use Rd
 void MIPSAssembler::ADDIU(int Rt, int Rs, int16_t imm)
 {
     *mPC++ = (addiu_op<<OP_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF) | (imm & MSK_16);
-    DBG_PRINT("%08x: %08x   addiu %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rt, Rs, imm);
 }
 
 
@@ -1556,18 +1503,16 @@ void MIPSAssembler::SUBU(int Rd, int Rs, int Rt)
 {
     *mPC++ = (spec_op<<OP_SHF) | (subu_fn<<FUNC_SHF) |
                         (Rs<<RS_SHF) | (Rt<<RT_SHF) | (Rd<<RD_SHF) ;
-    DBG_PRINT("%08x: %08x   subu %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rs, Rt);
 }
 
 
 void MIPSAssembler::SUBIU(int Rt, int Rs, int16_t imm)   // really addiu(d, s, -j)
 {
     *mPC++ = (addiu_op<<OP_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF) | ((-imm) & MSK_16);
-    DBG_PRINT("%08x: %08x   subiu %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rt, Rs, imm);
 }
 
 
-void MIPSAssembler::NEGU(int Rd, int Rs)    // really subu(d, zero, s) 
+void MIPSAssembler::NEGU(int Rd, int Rs)    // really subu(d, zero, s)
 {
     MIPSAssembler::SUBU(Rd, 0, Rs);
 }
@@ -1576,44 +1521,37 @@ void MIPSAssembler::MUL(int Rd, int Rs, int Rt)
 {
     *mPC++ = (spec2_op<<OP_SHF) | (mul_fn<<FUNC_SHF) |
                         (Rs<<RS_SHF) | (Rt<<RT_SHF) | (Rd<<RD_SHF) ;
-    DBG_PRINT("%08x: %08x   mul %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rs, Rt);
 }
 
 void MIPSAssembler::MULT(int Rs, int Rt)    // dest is hi,lo
 {
     *mPC++ = (spec_op<<OP_SHF) | (mult_fn<<FUNC_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF);
-    DBG_PRINT("%08x: %08x   mult %d, %d\n", (int)(mPC-1), *(mPC-1), Rs, Rt);
 }
 
 void MIPSAssembler::MULTU(int Rs, int Rt)    // dest is hi,lo
 {
     *mPC++ = (spec_op<<OP_SHF) | (multu_fn<<FUNC_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF);
-    DBG_PRINT("%08x: %08x   multu %d, %d\n", (int)(mPC-1), *(mPC-1), Rs, Rt);
 }
 
 void MIPSAssembler::MADD(int Rs, int Rt)    // hi,lo = hi,lo + Rs * Rt
 {
     *mPC++ = (spec2_op<<OP_SHF) | (madd_fn<<FUNC_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF);
-    DBG_PRINT("%08x: %08x   madd %d, %d\n", (int)(mPC-1), *(mPC-1), Rs, Rt);
 }
 
 void MIPSAssembler::MADDU(int Rs, int Rt)    // hi,lo = hi,lo + Rs * Rt
 {
     *mPC++ = (spec2_op<<OP_SHF) | (maddu_fn<<FUNC_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF);
-    DBG_PRINT("%08x: %08x   maddu %d, %d\n", (int)(mPC-1), *(mPC-1), Rs, Rt);
 }
 
 
 void MIPSAssembler::MSUB(int Rs, int Rt)    // hi,lo = hi,lo - Rs * Rt
 {
     *mPC++ = (spec2_op<<OP_SHF) | (msub_fn<<FUNC_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF);
-    DBG_PRINT("%08x: %08x   msub %d, %d\n", (int)(mPC-1), *(mPC-1), Rs, Rt);
 }
 
 void MIPSAssembler::MSUBU(int Rs, int Rt)    // hi,lo = hi,lo - Rs * Rt
 {
     *mPC++ = (spec2_op<<OP_SHF) | (msubu_fn<<FUNC_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF);
-    DBG_PRINT("%08x: %08x   msubu %d, %d\n", (int)(mPC-1), *(mPC-1), Rs, Rt);
 }
 
 
@@ -1621,14 +1559,12 @@ void MIPSAssembler::SEB(int Rd, int Rt)    // sign-extend byte (mips32r2)
 {
     *mPC++ = (spec3_op<<OP_SHF) | (bshfl_fn<<FUNC_SHF) | (seb_fn << SA_SHF) |
                     (Rt<<RT_SHF) | (Rd<<RD_SHF);
-    DBG_PRINT("%08x: %08x   seb %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rt);
 }
 
 void MIPSAssembler::SEH(int Rd, int Rt)    // sign-extend half-word (mips32r2)
 {
     *mPC++ = (spec3_op<<OP_SHF) | (bshfl_fn<<FUNC_SHF) | (seh_fn << SA_SHF) |
                     (Rt<<RT_SHF) | (Rd<<RD_SHF);
-    DBG_PRINT("%08x: %08x   seh %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rt);
 }
 
 
@@ -1636,160 +1572,131 @@ void MIPSAssembler::SEH(int Rd, int Rt)    // sign-extend half-word (mips32r2)
 #if 0
 #pragma mark -
 #pragma mark Comparisons...
-#endif 
+#endif
 
 void MIPSAssembler::SLT(int Rd, int Rs, int Rt)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (slt_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (slt_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rt<<RT_SHF);
-    DBG_PRINT("%08x: %08x   slt %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rs, Rt);
 }
 
 void MIPSAssembler::SLTI(int Rt, int Rs, int16_t imm)
 {
     *mPC++ = (slti_op<<OP_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF) | (imm & MSK_16);
-    DBG_PRINT("%08x: %08x   slti %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rt, Rs, imm);
 }
 
 
 void MIPSAssembler::SLTU(int Rd, int Rs, int Rt)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (sltu_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (sltu_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rt<<RT_SHF);
-    DBG_PRINT("%08x: %08x   sltu %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rs, Rt);
 }
 
 void MIPSAssembler::SLTIU(int Rt, int Rs, int16_t imm)
 {
     *mPC++ = (sltiu_op<<OP_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF) | (imm & MSK_16);
-    DBG_PRINT("%08x: %08x   sltiu %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rt, Rs, imm);
 }
-
-
 
 
 
 #if 0
 #pragma mark -
 #pragma mark Logical...
-#endif 
+#endif
 
 void MIPSAssembler::AND(int Rd, int Rs, int Rt)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (and_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (and_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rt<<RT_SHF);
-    DBG_PRINT("%08x: %08x   and %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rs, Rt);
 }
 
 void MIPSAssembler::ANDI(int Rt, int Rs, uint16_t imm)      // todo: support larger immediate
 {
     *mPC++ = (andi_op<<OP_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF) | (imm & MSK_16);
-    DBG_PRINT("%08x: %08x   andi %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rt, Rs, imm);
 }
 
 
 void MIPSAssembler::OR(int Rd, int Rs, int Rt)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (or_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (or_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rt<<RT_SHF);
-    DBG_PRINT("%08x: %08x   or %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rs, Rt);
 }
 
 void MIPSAssembler::ORI(int Rt, int Rs, uint16_t imm)
 {
     *mPC++ = (ori_op<<OP_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF) | (imm & MSK_16);
-    DBG_PRINT("%08x: %08x   ori %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rt, Rs, imm);
 }
-
 
 void MIPSAssembler::NOR(int Rd, int Rs, int Rt)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (nor_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (nor_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rt<<RT_SHF);
-    DBG_PRINT("%08x: %08x   nor %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rs, Rt);
 }
-
 
 void MIPSAssembler::NOT(int Rd, int Rs)
 {
     MIPSAssembler::NOR(Rd, Rs, 0);  // NOT(d,s) = NOR(d,s,zero)
 }
 
-
 void MIPSAssembler::XOR(int Rd, int Rs, int Rt)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (xor_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (xor_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rt<<RT_SHF);
-    DBG_PRINT("%08x: %08x   xor %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rs, Rt);
 }
 
-void MIPSAssembler::XORI(int Rt, int Rs, uint16_t imm)      // todo: support larger immediate
+void MIPSAssembler::XORI(int Rt, int Rs, uint16_t imm)  // todo: support larger immediate
 {
     *mPC++ = (xori_op<<OP_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF) | (imm & MSK_16);
-    DBG_PRINT("%08x: %08x   xori %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rt, Rs, imm);
 }
-
-
 
 void MIPSAssembler::SLL(int Rd, int Rt, int shft)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (sll_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (sll_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rt<<RT_SHF) | (shft<<RE_SHF);
-    DBG_PRINT("%08x: %08x   sll %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rt, shft);
 }
 
 void MIPSAssembler::SLLV(int Rd, int Rt, int Rs)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (sllv_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (sllv_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rt<<RT_SHF);
-    DBG_PRINT("%08x: %08x   sllv %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rt, Rs);
 }
-
 
 void MIPSAssembler::SRL(int Rd, int Rt, int shft)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (srl_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (srl_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rt<<RT_SHF) | (shft<<RE_SHF);
-    DBG_PRINT("%08x: %08x   srl %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rt, shft);
 }
 
 void MIPSAssembler::SRLV(int Rd, int Rt, int Rs)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (srlv_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (srlv_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rt<<RT_SHF);
-    DBG_PRINT("%08x: %08x   srlv %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rt, Rs);
 }
-
 
 void MIPSAssembler::SRA(int Rd, int Rt, int shft)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (sra_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (sra_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rt<<RT_SHF) | (shft<<RE_SHF);
-    DBG_PRINT("%08x: %08x   sra %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rt, shft);
 }
 
 void MIPSAssembler::SRAV(int Rd, int Rt, int Rs)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (srav_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (srav_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rt<<RT_SHF);
-    DBG_PRINT("%08x: %08x   srav %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rt, Rs);
 }
-
 
 void MIPSAssembler::ROTR(int Rd, int Rt, int shft)      // mips32r2
 {
     // note weird encoding (SRL + 1)
-    *mPC++ = (spec_op<<OP_SHF) | (srl_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (srl_fn<<FUNC_SHF) |
                         (1<<RS_SHF) | (Rd<<RD_SHF) | (Rt<<RT_SHF) | (shft<<RE_SHF);
-    DBG_PRINT("%08x: %08x   rotr %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rt, shft);
 }
 
 void MIPSAssembler::ROTRV(int Rd, int Rt, int Rs)       // mips32r2
 {
     // note weird encoding (SRLV + 1)
-    *mPC++ = (spec_op<<OP_SHF) | (srlv_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (srlv_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rt<<RT_SHF) | (1<<RE_SHF);
-    DBG_PRINT("%08x: %08x   rotrv %d, %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rt, Rs);
 }
 
 // uses at2 register (mapped to some appropriate mips reg)
@@ -1814,93 +1721,76 @@ void MIPSAssembler::RORIsyn(int Rd, int Rt, int rot)
 
 void MIPSAssembler::CLO(int Rd, int Rs)
 {
-    // Rt field must have same gpr # as Rd 
-    *mPC++ = (spec2_op<<OP_SHF) | (clo_fn<<FUNC_SHF) | 
-                        (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rd<<RT_SHF); 
-    DBG_PRINT("%08x: %08x   clo %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rs);
+    // Rt field must have same gpr # as Rd
+    *mPC++ = (spec2_op<<OP_SHF) | (clo_fn<<FUNC_SHF) |
+                        (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rd<<RT_SHF);
 }
 
 void MIPSAssembler::CLZ(int Rd, int Rs)
 {
-    // Rt field must have same gpr # as Rd 
-    *mPC++ = (spec2_op<<OP_SHF) | (clz_fn<<FUNC_SHF) | 
-                        (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rd<<RT_SHF); 
-    DBG_PRINT("%08x: %08x   clz %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rs);
+    // Rt field must have same gpr # as Rd
+    *mPC++ = (spec2_op<<OP_SHF) | (clz_fn<<FUNC_SHF) |
+                        (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rd<<RT_SHF);
 }
 
 void MIPSAssembler::WSBH(int Rd, int Rt)      // mips32r2
 {
     *mPC++ = (spec3_op<<OP_SHF) | (bshfl_fn<<FUNC_SHF) | (wsbh_fn << SA_SHF) |
                         (Rt<<RT_SHF) | (Rd<<RD_SHF);
-    DBG_PRINT("%08x: %08x   wsbh %d, %d\n", (int)(mPC-1), *(mPC-1), Rd, Rt);
 }
+
 
 
 #if 0
 #pragma mark -
 #pragma mark Load/store...
-#endif 
-
-
+#endif
 
 void MIPSAssembler::LW(int Rt, int Rbase, int16_t offset)
 {
     *mPC++ = (lw_op<<OP_SHF) | (Rbase<<RS_SHF) | (Rt<<RT_SHF) | (offset & MSK_16);
-    DBG_PRINT("%08x: %08x   lw %d, %d(%d)\n", (int)(mPC-1), *(mPC-1), Rt, offset, Rbase);
 }
 
 void MIPSAssembler::SW(int Rt, int Rbase, int16_t offset)
 {
     *mPC++ = (sw_op<<OP_SHF) | (Rbase<<RS_SHF) | (Rt<<RT_SHF) | (offset & MSK_16);
-    DBG_PRINT("%08x: %08x   sw %d, %d(%d)\n", (int)(mPC-1), *(mPC-1), Rt, offset, Rbase);
 }
-
 
 // lb is sign-extended
 void MIPSAssembler::LB(int Rt, int Rbase, int16_t offset)
 {
     *mPC++ = (lb_op<<OP_SHF) | (Rbase<<RS_SHF) | (Rt<<RT_SHF) | (offset & MSK_16);
-    DBG_PRINT("%08x: %08x   lb %d, %d(%d)\n", (int)(mPC-1), *(mPC-1), Rt, offset, Rbase);
 }
 
 void MIPSAssembler::LBU(int Rt, int Rbase, int16_t offset)
 {
     *mPC++ = (lbu_op<<OP_SHF) | (Rbase<<RS_SHF) | (Rt<<RT_SHF) | (offset & MSK_16);
-    DBG_PRINT("%08x: %08x   lbu %d, %d(%d)\n", (int)(mPC-1), *(mPC-1), Rt, offset, Rbase);
 }
 
 void MIPSAssembler::SB(int Rt, int Rbase, int16_t offset)
 {
     *mPC++ = (sb_op<<OP_SHF) | (Rbase<<RS_SHF) | (Rt<<RT_SHF) | (offset & MSK_16);
-    DBG_PRINT("%08x: %08x   sb %d, %d(%d)\n", (int)(mPC-1), *(mPC-1), Rt, offset, Rbase);
 }
-
 
 // lh is sign-extended
 void MIPSAssembler::LH(int Rt, int Rbase, int16_t offset)
 {
     *mPC++ = (lh_op<<OP_SHF) | (Rbase<<RS_SHF) | (Rt<<RT_SHF) | (offset & MSK_16);
-    DBG_PRINT("%08x: %08x   lh %d, %d(%d)\n", (int)(mPC-1), *(mPC-1), Rt, offset, Rbase);
 }
 
 void MIPSAssembler::LHU(int Rt, int Rbase, int16_t offset)
 {
     *mPC++ = (lhu_op<<OP_SHF) | (Rbase<<RS_SHF) | (Rt<<RT_SHF) | (offset & MSK_16);
-    DBG_PRINT("%08x: %08x   lhu %d, %d(%d)\n", (int)(mPC-1), *(mPC-1), Rt, offset, Rbase);
 }
 
 void MIPSAssembler::SH(int Rt, int Rbase, int16_t offset)
 {
     *mPC++ = (sh_op<<OP_SHF) | (Rbase<<RS_SHF) | (Rt<<RT_SHF) | (offset & MSK_16);
-    DBG_PRINT("%08x: %08x   sh %d, %d(%d)\n", (int)(mPC-1), *(mPC-1), Rt, offset, Rbase);
 }
-
-
 
 void MIPSAssembler::LUI(int Rt, int16_t offset)
 {
     *mPC++ = (lui_op<<OP_SHF) | (Rt<<RT_SHF) | (offset & MSK_16);
-    DBG_PRINT("%08x: %08x   lui %d, %d\n", (int)(mPC-1), *(mPC-1), Rt, offset);
 }
 
 
@@ -1908,55 +1798,45 @@ void MIPSAssembler::LUI(int Rt, int16_t offset)
 #if 0
 #pragma mark -
 #pragma mark Register move...
-#endif 
+#endif
 
 void MIPSAssembler::MOVE(int Rd, int Rs)
 {
     // encoded as "or rd, rs, zero"
-    *mPC++ = (spec_op<<OP_SHF) | (or_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (or_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rs<<RS_SHF) | (0<<RT_SHF);
-    DBG_PRINT("%08x: %08x   move %d, %d (or rd, rs, $zero)\n", 
-                    (int)(mPC-1), *(mPC-1), Rd, Rs);
 }
 
 void MIPSAssembler::MOVN(int Rd, int Rs, int Rt)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (movn_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (movn_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rt<<RT_SHF);
-    DBG_PRINT("%08x: %08x   movn %d, %d, %d\n", 
-                        (int)(mPC-1), *(mPC-1), Rd, Rs, Rt);
 }
 
 void MIPSAssembler::MOVZ(int Rd, int Rs, int Rt)
 {
-    *mPC++ = (spec_op<<OP_SHF) | (movz_fn<<FUNC_SHF) | 
+    *mPC++ = (spec_op<<OP_SHF) | (movz_fn<<FUNC_SHF) |
                         (Rd<<RD_SHF) | (Rs<<RS_SHF) | (Rt<<RT_SHF);
-    DBG_PRINT("%08x: %08x   movz %d, %d, %d\n", 
-                        (int)(mPC-1), *(mPC-1), Rd, Rs, Rt);
 }
 
 void MIPSAssembler::MFHI(int Rd)
 {
     *mPC++ = (spec_op<<OP_SHF) | (mfhi_fn<<FUNC_SHF) | (Rd<<RD_SHF);
-    DBG_PRINT("%08x: %08x   mfhi %d\n", (int)(mPC-1), *(mPC-1), Rd);
 }
 
 void MIPSAssembler::MFLO(int Rd)
 {
     *mPC++ = (spec_op<<OP_SHF) | (mflo_fn<<FUNC_SHF) | (Rd<<RD_SHF);
-    DBG_PRINT("%08x: %08x   mflo %d\n", (int)(mPC-1), *(mPC-1), Rd);
 }
 
 void MIPSAssembler::MTHI(int Rs)
 {
     *mPC++ = (spec_op<<OP_SHF) | (mthi_fn<<FUNC_SHF) | (Rs<<RS_SHF);
-    DBG_PRINT("%08x: %08x   mthi %d\n", (int)(mPC-1), *(mPC-1), Rs);
 }
 
 void MIPSAssembler::MTLO(int Rs)
 {
     *mPC++ = (spec_op<<OP_SHF) | (mtlo_fn<<FUNC_SHF) | (Rs<<RS_SHF);
-    DBG_PRINT("%08x: %08x   mtlo %d\n", (int)(mPC-1), *(mPC-1), Rs);
 }
 
 
@@ -1964,19 +1844,18 @@ void MIPSAssembler::MTLO(int Rs)
 #if 0
 #pragma mark -
 #pragma mark Branch...
-#endif 
+#endif
 
 // temporarily forcing a NOP into branch-delay slot, just to be safe
 // todo: remove NOP, optimze use of delay slots
 void MIPSAssembler::B(const char* label)
 {
     mBranchTargets.add(branch_target_t(label, mPC));
-    
+
     // encoded as BEQ zero, zero, offset
-    *mPC++ = (beq_op<<OP_SHF) | (0<<RT_SHF) 
+    *mPC++ = (beq_op<<OP_SHF) | (0<<RT_SHF)
                         | (0<<RS_SHF) | 0;  // offset filled in later
-                        
-    DBG_PRINT("%08x: %08x   b %s\n", (int)(mPC-1), *(mPC-1), label);
+
     MIPSAssembler::NOP();
 }
 
@@ -1984,8 +1863,6 @@ void MIPSAssembler::BEQ(int Rs, int Rt, const char* label)
 {
     mBranchTargets.add(branch_target_t(label, mPC));
     *mPC++ = (beq_op<<OP_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF) | 0;
-    DBG_PRINT("%08x: %08x   beq %d, %d, %s\n", 
-                        (int)(mPC-1), *(mPC-1), Rt, Rs, label);
     MIPSAssembler::NOP();
 }
 
@@ -1993,8 +1870,6 @@ void MIPSAssembler::BNE(int Rs, int Rt, const char* label)
 {
     mBranchTargets.add(branch_target_t(label, mPC));
     *mPC++ = (bne_op<<OP_SHF) | (Rt<<RT_SHF) | (Rs<<RS_SHF) | 0;
-    DBG_PRINT("%08x: %08x   bne %d, %d, %s\n", 
-                        (int)(mPC-1), *(mPC-1), Rt, Rs, label);
     MIPSAssembler::NOP();
 }
 
@@ -2002,8 +1877,6 @@ void MIPSAssembler::BLEZ(int Rs, const char* label)
 {
     mBranchTargets.add(branch_target_t(label, mPC));
     *mPC++ = (blez_op<<OP_SHF) | (0<<RT_SHF) | (Rs<<RS_SHF) | 0;
-    DBG_PRINT("%08x: %08x   blez %d, %s\n", 
-                        (int)(mPC-1), *(mPC-1), Rs, label);
     MIPSAssembler::NOP();
 }
 
@@ -2011,8 +1884,6 @@ void MIPSAssembler::BLTZ(int Rs, const char* label)
 {
     mBranchTargets.add(branch_target_t(label, mPC));
     *mPC++ = (regimm_op<<OP_SHF) | (bltz_fn<<RT_SHF) | (Rs<<RS_SHF) | 0;
-    DBG_PRINT("%08x: %08x   bltz %d, %s\n", 
-                        (int)(mPC-1), *(mPC-1), Rs, label);
     MIPSAssembler::NOP();
 }
 
@@ -2020,8 +1891,6 @@ void MIPSAssembler::BGTZ(int Rs, const char* label)
 {
     mBranchTargets.add(branch_target_t(label, mPC));
     *mPC++ = (bgtz_op<<OP_SHF) | (0<<RT_SHF) | (Rs<<RS_SHF) | 0;
-    DBG_PRINT("%08x: %08x   bgtz %d, %s\n", 
-                        (int)(mPC-1), *(mPC-1), Rs, label);
     MIPSAssembler::NOP();
 }
 
@@ -2030,16 +1899,12 @@ void MIPSAssembler::BGEZ(int Rs, const char* label)
 {
     mBranchTargets.add(branch_target_t(label, mPC));
     *mPC++ = (regimm_op<<OP_SHF) | (bgez_fn<<RT_SHF) | (Rs<<RS_SHF) | 0;
-    DBG_PRINT("%08x: %08x   bgez %d, %s\n", 
-                        (int)(mPC-1), *(mPC-1), Rs, label);
     MIPSAssembler::NOP();
 }
 
 void MIPSAssembler::JR(int Rs)
 {
     *mPC++ = (spec_op<<OP_SHF) | (Rs<<RS_SHF) | (jr_fn << FUNC_SHF);
-    DBG_PRINT("%08x: %08x   jr %d\n", 
-                        (int)(mPC-1), *(mPC-1), Rs);
     MIPSAssembler::NOP();
 }
 
@@ -2047,7 +1912,7 @@ void MIPSAssembler::JR(int Rs)
 #if 0
 #pragma mark -
 #pragma mark Synthesized Branch...
-#endif 
+#endif
 
 // synthetic variants of branches (using slt & friends)
 void MIPSAssembler::BEQZ(int Rs, const char* label)
@@ -2114,13 +1979,12 @@ void MIPSAssembler::BLTU(int Rs, int Rt, const char* label)
 #if 0
 #pragma mark -
 #pragma mark Misc...
-#endif 
+#endif
 
 void MIPSAssembler::NOP(void)
 {
     // encoded as "sll zero, zero, 0", which is all zero
     *mPC++ = (spec_op<<OP_SHF) | (sll_fn<<FUNC_SHF);
-    DBG_PRINT("%08x: %08x   nop\n", (int)(mPC-1), *(mPC-1));
 }
 
 // using this as special opcode for not-yet-implemented ARM instruction
@@ -2128,7 +1992,6 @@ void MIPSAssembler::NOP2(void)
 {
     // encoded as "sll zero, zero, 2", still a nop, but a unique code
     *mPC++ = (spec_op<<OP_SHF) | (sll_fn<<FUNC_SHF) | (2 << RE_SHF);
-    DBG_PRINT("%08x: %08x   nop2\n", (int)(mPC-1), *(mPC-1));
 }
 
 // using this as special opcode for purposefully NOT implemented ARM instruction
@@ -2136,9 +1999,7 @@ void MIPSAssembler::UNIMPL(void)
 {
     // encoded as "sll zero, zero, 3", still a nop, but a unique code
     *mPC++ = (spec_op<<OP_SHF) | (sll_fn<<FUNC_SHF) | (3 << RE_SHF);
-    DBG_PRINT("%08x: %08x   nop3\n", (int)(mPC-1), *(mPC-1));
 }
-
 
 
 }; // namespace android:

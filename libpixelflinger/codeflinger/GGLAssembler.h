@@ -520,8 +520,6 @@ private:
 
     static int blending_codes(int fs, int fd);
 
-    void dbg_log_context(context_t const* c);   // FIXME: remove this debug code
-
     builder_context_t   mBuilderContext;
     texture_machine_t   mTextureMachine;
     component_info_t    mInfo[4];

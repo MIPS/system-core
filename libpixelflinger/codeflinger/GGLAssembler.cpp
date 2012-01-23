@@ -69,8 +69,8 @@ int GGLAssembler::scanline(const needs_t& needs, context_t const* c)
         err = scanline_core(needs, c);
         if (err == 0)
             break;
-        LOGI("scanline generation failed (err: %d), at opt level %d", 
-                err, opt_level);
+        // LOGI("scanline generation failed (err: %d), at opt level %d", 
+        //         err, opt_level);
         opt_level--;
     }
     
@@ -82,37 +82,17 @@ int GGLAssembler::scanline(const needs_t& needs, context_t const* c)
     // build a name for our pipeline
     char name[64];    
     sprintf(name,
-            "scanline__%08X:%08X:%08X:%08X [%3d ipp]",
-            needs.n, needs.p, needs.t[0], needs.t[1], per_fragment_ops);
+            "scanline__%08X:%08X_%08X_%08X [%3d ipp]",
+            needs.p, needs.n, needs.t[0], needs.t[1], per_fragment_ops);
 
     if (err) {
         LOGE("Error while generating ""%s""\n", name);
-        // disassemble(name);
+        disassemble(name);
         return -1;
     }
 
     return generate(name);
 }
-
-// FIXME: debug routine should be removed
-#define CONTEXT_LOG(comment, item) LOGI("%s, c->" #item ": %08x", comment, (uint32_t) c->item)
-
-void GGLAssembler::dbg_log_context(context_t const* c)
-{
-    LOGI("Context * : %08x", (uint32_t) c);
-    CONTEXT_LOG("Rx", iterators.xl);
-    CONTEXT_LOG("parts.count.reg", iterators.xr);
-    CONTEXT_LOG("Ry", iterators.y);
-    
-    CONTEXT_LOG("Rs", state.buffers.color.stride);
-    CONTEXT_LOG("parts.cbPtr.reg", state.buffers.color.data);
-    
-    CONTEXT_LOG("txPtr.reg", state.texture[0].iterators.ydsdy);
-    CONTEXT_LOG("txPtr.reg", state.texture[0].iterators.ydtdy);
-    CONTEXT_LOG("txPtr.reg", generated_vars.texture[0].stride);
-    CONTEXT_LOG("txPtr.reg", generated_vars.texture[0].data);
-}
-
 
 int GGLAssembler::scanline_core(const needs_t& needs, context_t const* c)
 {
@@ -1042,9 +1022,6 @@ void GGLAssembler::base_offset(
 // (Arm) limit of 16 total registers, but shift the mapping of those registers
 // from 0-15, to 2-17. Register 0 on Mips cannot be used as GP registers, and 
 // register 1 has a traditional use as a temp).
-//
-// This simplistic scheme should be modified so Mips processors can allocate
-// more registers, which can help in some ops.
 
 RegisterAllocator::RegisterAllocator(int arch) : mRegs(arch)
 {
@@ -1190,10 +1167,9 @@ int RegisterAllocator::RegisterFile::countFreeRegs() const
 
 void RegisterAllocator::RegisterFile::recycle(int reg)
 {
-    // FIXME: commented out, since common failure of running out of regs
-    //          triggers this assertion. Since the code is not execectued 
-    //          in that case, it does not matter. Undesriable from robustness
-    //          point of view, though
+    // commented out, since common failure of running out of regs
+    // triggers this assertion. Since the code is not execectued 
+    // in that case, it does not matter. No reason to FATAL err.
     // LOG_FATAL_IF(!isUsed(reg),
     //         "recycling unallocated register %d",
     //         reg);
@@ -1202,10 +1178,9 @@ void RegisterAllocator::RegisterFile::recycle(int reg)
 
 void RegisterAllocator::RegisterFile::recycleSeveral(uint32_t regMask)
 {
-// FIXME: commented out, since common failure of running out of regs
-//          triggers this assertion. Since the code is not execectued 
-//          in that case, it does not matter. Undesriable from robustness
-//          point of view, though
+    // commented out, since common failure of running out of regs
+    // triggers this assertion. Since the code is not execectued 
+    // in that case, it does not matter. No reason to FATAL err.
     // LOG_FATAL_IF((mRegs & regMask)!=regMask,
     //         "recycling unallocated registers "
     //         "(recycle=%08x, allocated=%08x, unallocated=%08x)",
