@@ -34,7 +34,7 @@ void dump_pc_and_lr(int tfd, int pid, mapinfo *map, int unwound_level, bool at_f
 #elif __i386__
 extern int unwind_backtrace_with_ptrace_x86(int tfd, pid_t pid, mapinfo *map, bool at_fault);
 #elif __mips__
-extern int unwind_backtrace_with_ptrace_mips(int tfd, pid_t pid, mapinfo *map, bool at_fault);
+extern int unwind_backtrace_with_ptrace_mips(int tfd, pid_t pid, mapinfo *map, unsigned int sp_list[], bool at_fault);
 void dump_pc_and_ra(int tfd, int pid, mapinfo *map, int unwound_level, bool at_fault);
 #endif
 

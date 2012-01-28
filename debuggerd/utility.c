@@ -84,6 +84,32 @@ const mapinfo *pc_to_mapinfo(mapinfo *mi, unsigned pc, unsigned *rel_pc)
     return NULL;
 }
 
+void syminfo(mapinfo *map, unsigned int pc,
+		    const char **mapname, const char **symname, unsigned int *symoffset)
+{
+    const mapinfo *mi;
+    unsigned int rel_pc;
+    const struct symbol *sym;
+
+    mi = pc_to_mapinfo(map, pc, &rel_pc);
+
+    *mapname = mi ? mi->name : "";
+
+    /* See if we can determine what symbol this stack frame resides in */
+    if (mi && mi->symbols != 0)
+	sym = symbol_table_lookup(mi->symbols, rel_pc);
+    else
+	sym = NULL;
+    if (sym && sym->name && *sym->name) {
+	*symname = sym->name;
+	*symoffset = rel_pc - sym->addr;
+    }
+    else {
+	*symname = NULL;
+	*symoffset = 0;
+    }
+}
+
 /*
  * Returns true if the specified signal has an associated address (i.e. it
  * sets siginfo_t.si_addr).
