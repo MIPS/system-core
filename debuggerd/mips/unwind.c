@@ -2,87 +2,111 @@
 #include <sys/ptrace.h>
 #include "../utility.h"
 
+struct stackframe {
+    int level;
+    int depth;
+    unsigned int sp;
+    unsigned int ra;
+    unsigned int pc;
+};
+
+#define GET_VALUE(var, ptr)	(var) = ptrace(PTRACE_PEEKTEXT, pid, (void*)(ptr), NULL);
+
+#define DBG(s...) //_LOG(0, 0, "DBG:" s)
+
+static int unwind_frame(pid_t pid, struct stackframe *frame) {
+  struct stackframe old_frame = *frame;
+  int ra_offset = 0;
+  int stack_size = 0;
+  unsigned int *addr;
+
+  unsigned int maxcheck = 1024;
+  int found_start = 0;
+  int immediate;
+
+  DBG("Starting scan using oldframe: pc=0x%08x ra=0x%08x sp=0x%08x\n", old_frame.pc, old_frame.ra, old_frame.sp);
+  for (addr = (unsigned int *)frame->pc; maxcheck-- > 0 && !found_start; --addr) {
+      unsigned int op;
+      GET_VALUE(op, addr);
+
+      DBG("@0x%08x: 0x%08x\n", addr, op);
+      switch (op & 0xffff0000) {
+      case 0x27bd0000: // addiu sp, imm
+	  // looking for stack being decremented
+	  immediate = ((((int)op) << 16) >> 16);
+	  if (immediate < 0) {
+	      stack_size = -immediate;
+	      found_start = 1;
+	      DBG("Found stack adjustment %d\n", stack_size);
+	  }
+	  break;
+      case 0xafbf0000: // sw ra, imm(sp)
+	  ra_offset = ((((int)op) << 16) >> 16);
+	  DBG("Found ra offset %d\n", ra_offset);
+	  break;
+      case 0x3c1c0000: // lui gp
+//      case 0x03e00000: // jr ra
+	  DBG("Found function boundary\n");
+	  found_start = 1;
+      default:
+	  break;
+      }
+  }
+
+  if (ra_offset) {
+      GET_VALUE(frame->ra, (unsigned long*) (frame->sp + ra_offset));
+      DBG("New ra: 0x%08x\n", frame->ra);
+  }
+
+  if (stack_size) {
+      frame->sp += stack_size;
+      DBG("New sp: 0x%08x\n", frame->sp);
+  }
+
+  if (frame->pc == frame->ra && stack_size == 0)
+      return 1;
+
+  frame->level++;
+  frame->pc = frame->ra;
+
+  return 0;
+}
+
 
 int unwind_backtrace_with_ptrace_mips(int tfd, pid_t pid, mapinfo *map,
-                                 bool at_fault)
+				      int sp_list[], bool at_fault)
 {
-#if 0
-    struct pt_regs_mips r;
-    unsigned int stack_level = 0;
-    unsigned int stack_depth = 0;
+    struct pt_regs r;
+    struct stackframe frame;
     unsigned int rel_pc;
-    unsigned int stack_ptr;
-    unsigned int stack_content;
+	 const char *mapname;
+	 const char *symname;
+	 unsigned int symoffset;
 
-    if(ptrace(PTRACE_GETREGS, pid, 0, &r)) return 0;
-    unsigned int eip = (unsigned int)r.eip;
-    unsigned int ebp = (unsigned int)r.ebp;
-    unsigned int cur_sp = (unsigned int)r.esp;
-    const mapinfo *mi;
-    const struct symbol* sym = 0;
+    DBG("Begin unwind_backtrace_with_ptrace_mips\n");
 
+    if(ptrace(PTRACE_GETREGS, pid, 0, &r))
+	return 0;
 
-//ebp==0, it indicates that the stack is poped to the bottom or there is no stack at all.
-    while (ebp) {
-        _LOG(tfd, !at_fault, "#0%d ",stack_level);
-        mi = pc_to_mapinfo(map, eip, &rel_pc);
+    frame.level = 0;
+    frame.depth = 0;
+    frame.sp = r.regs[29];
+    frame.ra = r.regs[31];
+    frame.pc = r.cp0_epc;
+    
+    do {
+	DBG("Current frame #%d: pc=0x%08x ra=0x%08x sp=0x%08x\n", frame.level, frame.pc, frame.ra, frame.sp);
+        /* Get symbolic information for this pc */
+	syminfo(map, frame.pc, &mapname, &symname, &symoffset);
+        if (symname)
+	    _LOG(tfd, !at_fault, "         #%02d  pc %08x sp %08x   %s:%s+%d\n", frame.level, frame.pc, frame.sp, mapname, symname, symoffset);
+	else
+            _LOG(tfd, !at_fault, "         #%02d  pc %08x sp %08x   %s\n", frame.level, frame.pc, frame.sp, mapname);
+	sp_list[frame.level] = frame.sp;
+    } while (unwind_frame(pid, &frame) == 0 && frame.level < STACK_CONTENT_DEPTH);
 
-        /* See if we can determine what symbol this stack frame resides in */
-        if (mi != 0 && mi->symbols != 0) {
-            sym = symbol_table_lookup(mi->symbols, rel_pc);
-        }
-        if (sym) {
-            _LOG(tfd, !at_fault, "    eip: %08x  %s (%s)\n", eip, mi ? mi->name : "", sym->name);
-        } else {
-            _LOG(tfd, !at_fault, "    eip: %08x  %s\n", eip, mi ? mi->name : "");
-        }
+    DBG("End unwind_backtrace_with_ptrace_mips\n");
 
-        stack_level++;
-        if (stack_level >= STACK_DEPTH || eip == 0)
-            break;
-        eip = ptrace(PTRACE_PEEKTEXT, pid, (void*)(ebp + 4), NULL);
-        ebp = ptrace(PTRACE_PEEKTEXT, pid, (void*)ebp, NULL);
-    }
-    ebp = (unsigned int)r.ebp;
-    stack_depth = stack_level;
-    stack_level = 0;
-    if (ebp)
-        _LOG(tfd, !at_fault, "stack: \n");
-    while (ebp) {
-        _LOG(tfd, !at_fault, "#0%d \n",stack_level);
-        stack_ptr = cur_sp;
-        while((int)(ebp - stack_ptr) >= 0) {
-            stack_content = ptrace(PTRACE_PEEKTEXT, pid, (void*)stack_ptr, NULL);
-            mi = pc_to_mapinfo(map, stack_content, &rel_pc);
-
-            /* See if we can determine what symbol this stack frame resides in */
-            if (mi != 0 && mi->symbols != 0) {
-                sym = symbol_table_lookup(mi->symbols, rel_pc);
-            }
-            if (sym) {
-                _LOG(tfd, !at_fault, "    %08x  %08x  %s (%s)\n",
-                    stack_ptr, stack_content, mi ? mi->name : "", sym->name);
-            } else {
-                _LOG(tfd, !at_fault, "    %08x  %08x  %s\n", stack_ptr, stack_content, mi ? mi->name : "");
-            }
-
-            stack_ptr = stack_ptr + 4;
-            //the stack frame may be very deep.
-            if((int)(stack_ptr - cur_sp) >= STACK_FRAME_DEPTH) {
-                _LOG(tfd, !at_fault, "    ......  ......  \n");
-                break;
-            }
-        }
-        cur_sp = ebp + 4;
-        stack_level++;
-        if (stack_level >= STACK_DEPTH || stack_level >= stack_depth)
-            break;
-        ebp = ptrace(PTRACE_PEEKTEXT, pid, (void*)ebp, NULL);
-    }
-
-    return stack_depth;
-#else
-    return 0;
-#endif
+    return frame.level;
 }
 

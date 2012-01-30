@@ -316,7 +316,7 @@ void dump_crash_report(int tfd, unsigned pid, unsigned tid, bool at_fault)
     /* If stack unwinder fails, use the default solution to dump the stack
     * content.
     */
-    stack_depth = unwind_backtrace_with_ptrace_mips(tfd, tid, milist,at_fault);
+    stack_depth = unwind_backtrace_with_ptrace_mips(tfd, tid, milist, sp_list, at_fault);
     /* The stack unwinder should at least unwind two levels of stack. If less
      * level is seen we make sure at least pc and ra are dumped.
      */
