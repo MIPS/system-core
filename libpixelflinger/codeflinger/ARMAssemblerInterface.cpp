@@ -61,13 +61,13 @@ int ARMAssemblerInterface::buildImmediate(
     return 0;
 }
 
-// shifters...
-
 bool ARMAssemblerInterface::isValidImmediate(uint32_t immediate)
 {
     uint32_t rot, imm;
     return buildImmediate(immediate, rot, imm) == 0;
 }
+
+
 
 uint32_t ARMAssemblerInterface::imm(uint32_t immediate)
 {
@@ -166,6 +166,35 @@ uint32_t ARMAssemblerInterface::reg_pre(int Rm, int W)
 uint32_t ARMAssemblerInterface::reg_post(int Rm)
 {
     return (((uint32_t(Rm)>>31)^1)<<23) | (abs(Rm)&0xF);
+}
+
+// --------------------------------------------------------------------
+
+// The following two functions are static and used for initializers
+// in the original ARM code. The above versions (without __), are now
+// virtual, and can be overridden in the MIPS code. But since these are 
+// needed at initialization time, they must be static. Not thrilled with 
+// this implementation, but it works...
+
+uint32_t ARMAssemblerInterface::__immed12_pre(int32_t immed12, int W)
+{
+    LOG_ALWAYS_FATAL_IF(abs(immed12) >= 0x800,
+                        "LDR(B)/STR(B)/PLD immediate too big (%08x)",
+                        immed12);
+    return (1<<24) | (((uint32_t(immed12)>>31)^1)<<23) |
+            ((W&1)<<21) | (abs(immed12)&0x7FF);
+}
+
+uint32_t ARMAssemblerInterface::__immed8_pre(int32_t immed8, int W)
+{
+    uint32_t offset = abs(immed8);
+
+    LOG_ALWAYS_FATAL_IF(abs(immed8) >= 0x100,
+                        "LDRH/LDRSB/LDRSH/STRH immediate too big (%08x)",
+                        immed8);
+
+    return  (1<<24) | (1<<22) | (((uint32_t(immed8)>>31)^1)<<23) |
+            ((W&1)<<21) | (((offset&0xF0)<<4)|(offset&0xF));
 }
 
 

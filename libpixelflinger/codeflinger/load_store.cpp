@@ -18,11 +18,26 @@
 #include <assert.h>
 #include <stdio.h>
 #include <cutils/log.h>
+#include <endian.h>
+
 #include "codeflinger/GGLAssembler.h"
 
 #ifdef __ARM_ARCH__
 #include <machine/cpu-features.h>
 #endif
+
+#if !defined(__BYTE_ORDER) || !defined(__BIG_ENDIAN)
+#error "__BYTE_ORDER macros are not defined"
+#endif
+
+#if __BYTE_ORDER == __BIG_ENDIAN
+#define CODEGEN_HOST_TO_RGBA(dst, src) REV(AL, dst, src)
+#define CODEGEN_RGBA_TO_HOST(dst, src) REV(AL, dst, src)
+#else // little endian
+#define CODEGEN_HOST_TO_RGBA(dst, src)
+#define CODEGEN_RGBA_TO_HOST(dst, src)
+#endif  //__BYTE_ORDER == __BIG_ENDIAN
+
 
 namespace android {
 
@@ -73,6 +88,7 @@ void GGLAssembler::load(const pointer_t& addr, const pixel_t& s, uint32_t flags)
     case 32:
         if (inc)    LDR(AL, s.reg, addr.reg, immed12_post(4));
         else        LDR(AL, s.reg, addr.reg);
+	CODEGEN_HOST_TO_RGBA(s.reg, s.reg);
         break;
     case 24:
         // 24 bits formats are a little special and used only for RGB
@@ -110,7 +126,11 @@ void GGLAssembler::extract(integer_t& d, int s, int h, int l, int bits)
 {
     const int maskLen = h-l;
 
+#ifdef __mips__
+    assert(maskLen<=11);
+#else
     assert(maskLen<=8);
+#endif
     assert(h);
     
 #if __ARM_ARCH__ >= 7

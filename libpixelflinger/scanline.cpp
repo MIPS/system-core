@@ -32,6 +32,7 @@
 #include "codeflinger/CodeCache.h"
 #include "codeflinger/GGLAssembler.h"
 #include "codeflinger/ARMAssembler.h"
+#include "codeflinger/MIPSAssembler.h"
 //#include "codeflinger/ARMAssemblerOptimizer.h"
 
 // ----------------------------------------------------------------------------
@@ -49,7 +50,7 @@
 #   define ANDROID_CODEGEN      ANDROID_CODEGEN_GENERATED
 #endif
 
-#if defined(__arm__)
+#if defined(__arm__) || defined(__mips__)
 #   define ANDROID_ARM_CODEGEN  1
 #else
 #   define ANDROID_ARM_CODEGEN  0
@@ -63,7 +64,11 @@
  */
 #define DEBUG_NEEDS  0
 
+#ifdef __mips__
+#define ASSEMBLY_SCRATCH_SIZE   4096
+#else
 #define ASSEMBLY_SCRATCH_SIZE   2048
+#endif
 
 // ----------------------------------------------------------------------------
 namespace android {
@@ -266,7 +271,12 @@ static  const needs_filter_t fill16noblend = {
 // ----------------------------------------------------------------------------
 
 #if ANDROID_ARM_CODEGEN
+
+#if defined(__mips__)
+static CodeCache gCodeCache(32 * 1024);
+#else
 static CodeCache gCodeCache(12 * 1024);
+#endif
 
 class ScanlineAssembly : public Assembly {
     AssemblyKey<needs_t> mKey;
@@ -308,10 +318,6 @@ static void pick_scanline(context_t* c)
     c->scanline = scanline;
     return;
 #endif
-
-    //printf("*** needs [%08lx:%08lx:%08lx:%08lx]\n",
-    //    c->state.needs.n, c->state.needs.p,
-    //    c->state.needs.t[0], c->state.needs.t[1]);
 
     // first handle the special case that we cannot test with a filter
     const uint32_t cb_format = GGL_READ_NEEDS(CB_FORMAT, c->state.needs.n);
@@ -375,9 +381,14 @@ static void pick_scanline(context_t* c)
         sp<ScanlineAssembly> a = new ScanlineAssembly(c->state.needs, 
                 ASSEMBLY_SCRATCH_SIZE);
         // initialize our assembler
+#if defined(__arm__)
         GGLAssembler assembler( new ARMAssembler(a) );
         //GGLAssembler assembler(
         //        new ARMAssemblerOptimizer(new ARMAssembler(a)) );
+#endif
+#if defined(__mips__)
+        GGLAssembler assembler( new ArmToMipsAssembler(a) );
+#endif
         // generate the scanline code for the given needs
         int err = assembler.scanline(c->state.needs, c);
         if (ggl_likely(!err)) {
