@@ -1,6 +1,7 @@
 #include <cutils/logd.h>
 #include <sys/ptrace.h>
 #include "../utility.h"
+#include "mips_utility.h"
 
 struct stackframe {
     int level;
@@ -76,7 +77,7 @@ static int unwind_frame(pid_t pid, struct stackframe *frame) {
 int unwind_backtrace_with_ptrace_mips(int tfd, pid_t pid, mapinfo *map,
 				      int sp_list[], bool at_fault)
 {
-    struct pt_regs r;
+    user_regs_struct r;
     struct stackframe frame;
     unsigned int rel_pc;
 	 const char *mapname;
@@ -90,8 +91,8 @@ int unwind_backtrace_with_ptrace_mips(int tfd, pid_t pid, mapinfo *map,
 
     frame.level = 0;
     frame.depth = 0;
-    frame.sp = r.regs[29];
-    frame.ra = r.regs[31];
+    frame.sp = r.regs[MIPS_REG_SP];
+    frame.ra = r.regs[MIPS_REG_RA];
     frame.pc = r.cp0_epc;
     
     do {

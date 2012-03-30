@@ -34,6 +34,7 @@
 #include <linux/input.h>
 
 #include "../utility.h"
+#include "mips_utility.h"
 
 #define DUMP_MEM_FOR_ALL_REGS 0
 
@@ -180,7 +181,7 @@ void dump_stack_and_code(int tfd, int pid, mapinfo *map,
                          int unwind_depth, unsigned int sp_list[],
                          bool at_fault)
 {
-    struct pt_regs r;
+    user_regs_struct r;
     int sp_depth;
     bool only_in_tombstone = !at_fault;
 
@@ -221,7 +222,7 @@ void dump_stack_and_code(int tfd, int pid, mapinfo *map,
         }
     } else {
 	unsigned int pc = R(r.cp0_epc);
-	unsigned int ra = R(r.regs[31]);
+	unsigned int ra = R(r.regs[MIPS_REG_RA]);
 
 	_LOG(tfd, only_in_tombstone, "\ncode around pc:\n");
         dump_memory(tfd, pid, (uintptr_t)pc, only_in_tombstone);
@@ -236,7 +237,7 @@ void dump_stack_and_code(int tfd, int pid, mapinfo *map,
     }
 
     unsigned int p, end;
-    unsigned int sp = R(r.regs[29]);
+    unsigned int sp = R(r.regs[MIPS_REG_SP]);
 
     p = sp - 64;
     if (p > sp)
@@ -321,7 +322,7 @@ void dump_stack_and_code(int tfd, int pid, mapinfo *map,
 void dump_pc_and_ra(int tfd, int pid, mapinfo *map, int unwound_level,
                     bool at_fault)
 {
-    struct pt_regs r;
+    user_regs_struct r;
     const char *mapname;
     const char *symname;
     unsigned int symoffset;
@@ -340,18 +341,18 @@ void dump_pc_and_ra(int tfd, int pid, mapinfo *map, int unwound_level,
 	     _LOG(tfd, !at_fault, "         #%02d  pc %08x  %s\n",
 		  0, R(r.cp0_epc), mapname);
     }
-    syminfo(map, R(r.regs[31]), &mapname, &symname, &symoffset);
+    syminfo(map, R(r.regs[MIPS_REG_RA]), &mapname, &symname, &symoffset);
     if (symname)
 	_LOG(tfd, !at_fault,     "         #%02d  ra %08x  %s:%s+%d\n",
-	     1, R(r.regs[31]), mapname, symname, symoffset);
+	     1, R(r.regs[MIPS_REG_RA]), mapname, symname, symoffset);
     else
 	_LOG(tfd, !at_fault,     "         #%02d  ra %08x  %s\n",
-	     1, R(r.regs[31]), mapname);
+	     1, R(r.regs[MIPS_REG_RA]), mapname);
 }
 
 void dump_registers(int tfd, int pid, bool at_fault)
 {
-    struct pt_regs r;
+    user_regs_struct r;
     bool only_in_tombstone = !at_fault;
 
     if(ptrace(PTRACE_GETREGS, pid, 0, &r)) {
