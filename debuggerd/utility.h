@@ -51,6 +51,10 @@ extern void get_remote_struct(int pid, void *src, void *dst, size_t size);
 /* Find the containing map for the pc */
 const mapinfo *pc_to_mapinfo (mapinfo *mi, unsigned pc, unsigned *rel_pc);
 
+/* Find the containing map and symbolic information for the pc */
+void syminfo(mapinfo *map, unsigned int pc,
+             const char **mapname, const char **symname, unsigned int *symoffset);
+
 /* Map a pc address to the name of the containing ELF file */
 const char *map_to_name(mapinfo *mi, unsigned pc, const char* def);
 
