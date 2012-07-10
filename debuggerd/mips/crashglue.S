@@ -33,15 +33,16 @@ crash1:
 	li	$26,0xdead0000+26
 	li	$27,0xdead0000+27
 	li	$28,0xdead0000+28
-	li	$29,0xdead0000+29
+	# don't trash the stack otherwise the signal handler won't run
+	#li	$29,0xdead0000+29
 	li	$30,0xdead0000+30
 	li	$31,0xdead0000+31
 
-	lw	$0,($0)
+	lw	$zero,($0)
 	b .
 
 
 crashnostack:
-	move	$sp, $zero
-	lw	$zero,($zero)
+	li	$sp, 0
+	lw	$zero,($0)
 	b .

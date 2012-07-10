@@ -102,8 +102,8 @@ static void dump_memory(log_t* log, pid_t tid, uintptr_t addr, bool at_fault) {
  */
 void dump_memory_and_code(const ptrace_context_t* context __attribute((unused)),
         log_t* log, pid_t tid, bool at_fault) {
-    struct pt_regs regs;
-    if(ptrace(PTRACE_GETREGS, tid, 0, &regs)) {
+    pt_regs_mips_t r;
+    if(ptrace(PTRACE_GETREGS, tid, 0, &r)) {
         return;
     }
 
@@ -118,7 +118,7 @@ void dump_memory_and_code(const ptrace_context_t* context __attribute((unused)),
 		)
 		continue;
 
-            uintptr_t addr = R(regs.regs[reg]);
+            uintptr_t addr = R(r.regs[reg]);
 
             /*
              * Don't bother if it looks like a small int or ~= null, or if
@@ -133,8 +133,8 @@ void dump_memory_and_code(const ptrace_context_t* context __attribute((unused)),
         }
     }
 
-    unsigned int pc = R(regs.cp0_epc);
-    unsigned int ra = R(regs.regs[31]);
+    unsigned int pc = R(r.cp0_epc);
+    unsigned int ra = R(r.regs[31]);
 
     _LOG(log, !at_fault, "\ncode around pc:\n");
     dump_memory(log, tid, (uintptr_t)pc, at_fault);
@@ -148,7 +148,7 @@ void dump_memory_and_code(const ptrace_context_t* context __attribute((unused)),
 void dump_registers(const ptrace_context_t* context __attribute((unused)),
         log_t* log, pid_t tid, bool at_fault)
 {
-    struct pt_regs r;
+    pt_regs_mips_t r;
     bool only_in_tombstone = !at_fault;
 
     if(ptrace(PTRACE_GETREGS, tid, 0, &r)) {
