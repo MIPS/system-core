@@ -74,7 +74,75 @@ static ssize_t unwind_backtrace_common(const memory_t* memory,
     size_t ignored_frames = 0;
     size_t returned_frames = 0;
 
-    /* FIXME: implement */
+    for (size_t index = 0; returned_frames < max_depth; index++) {
+	uintptr_t pc = state->pc;
+        backtrace_frame_t* frame;
+	uintptr_t addr;
+	int maxcheck = 128;
+	int stack_size = 0, ra_offset = 0;
+	bool found_start = false;
+
+	frame = add_backtrace_entry(pc, backtrace, ignore_depth,
+				    max_depth, &ignored_frames, &returned_frames);
+
+        if (frame)
+            frame->stack_top = state->sp;
+
+	for (addr = state->pc; maxcheck-- > 0 && !found_start; addr -= 4) {
+	    uint32_t op;
+	    if (!try_get_word(memory, addr, &op))
+		break;
+
+	    // ALOGV("@0x%08x: 0x%08x\n", addr, op);
+	    switch (op & 0xffff0000) {
+	    case 0x27bd0000: // addiu sp, imm
+	        {
+		    // looking for stack being decremented
+		    int32_t immediate = ((((int)op) << 16) >> 16);
+		    if (immediate < 0) {
+			stack_size = -immediate;
+			found_start = true;
+			ALOGV("Found stack adjustment %d\n", stack_size);
+		    }
+		}
+		break;
+	    case 0xafbf0000: // sw ra, imm(sp)
+		ra_offset = ((((int)op) << 16) >> 16);
+		ALOGV("Found ra offset %d\n", ra_offset);
+		break;
+	    case 0x3c1c0000: // lui gp
+		ALOGV("Found function boundary\n");
+		found_start = true;
+		break;
+	    default:
+		break;
+	    }
+	}
+
+	if (ra_offset) {
+	    uint32_t next_ra;
+	    if (!try_get_word(memory, state->sp + ra_offset, &next_ra))
+		break;
+	    state->ra = next_ra;
+	    ALOGV("New ra: 0x%08x\n", state->ra);
+	}
+
+	if (stack_size) {
+	    state->sp += stack_size;
+	    ALOGV("New sp: 0x%08x\n", state->sp);
+	}
+
+	if (state->pc == state->ra && stack_size == 0)
+	    break;
+
+	if (state->pc == 0)
+	    break;
+
+	state->pc = state->ra;
+    }
+
+    ALOGV("returning %d frames\n", returned_frames);
+
     return returned_frames;
 }
 

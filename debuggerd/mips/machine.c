@@ -115,6 +115,7 @@ void dump_memory_and_code(const ptrace_context_t* context __attribute((unused)),
 	    if (reg == 0 /* $0 */
 		|| reg == 26 /* $k0 */
 		|| reg == 27 /* $k1 */
+		|| reg == 31 /* $ra (done below) */
 		)
 		continue;
 
