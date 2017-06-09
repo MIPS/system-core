@@ -186,6 +186,10 @@ static void log_signal_summary(int signum, const siginfo_t* info) {
                     signal_name, code_desc, addr_desc, __gettid(), thread_name);
 }
 
+#if defined(MAGIC)
+extern int (*__akim_cback_check)(int, void*, void*);
+#endif
+
 /*
  * Returns true if the handler for signal "signum" has SA_SIGINFO set.
  */
@@ -360,6 +364,15 @@ static void debuggerd_signal_handler(int signal_number, siginfo_t* info, void* c
   if (!have_siginfo(signal_number)) {
     info = nullptr;
   }
+
+#if defined(MAGIC)
+  // Let libakim handle the signal if possible
+  if (__akim_cback_check && __akim_cback_check(signal_number, info, context) == 0) {
+    return;
+  }
+#else
+  (void) context;  /* suppress unused param msg */
+#endif
 
   struct siginfo si = {};
   if (!info) {

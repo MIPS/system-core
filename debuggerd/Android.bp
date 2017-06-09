@@ -118,9 +118,13 @@ cc_library_static {
         },
         android_mips: {
             srcs: ["libdebuggerd/mips/machine.cpp"],
+
+            cflags: ["-DMAGIC"],
         },
         android_mips64: {
             srcs: ["libdebuggerd/mips64/machine.cpp"],
+
+            cflags: ["-DMAGIC"],
         },
         android_x86: {
             srcs: ["libdebuggerd/x86/machine.cpp"],
