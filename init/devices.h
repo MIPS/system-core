@@ -109,6 +109,7 @@ class DeviceHandler {
     void HandleDeviceEvent(const Uevent& uevent);
 
     std::vector<std::string> GetBlockDeviceSymlinks(const Uevent& uevent) const;
+    std::vector<std::string> GetUbiDeviceSymlinks(const Uevent& uevent) const;
     void set_skip_restorecon(bool value) { skip_restorecon_ = value; }
 
   private:

@@ -101,6 +101,27 @@ static bool FindVbdDevicePrefix(const std::string& path, std::string* result) {
     return true;
 }
 
+static bool FindUbiDevicePrefix(const std::string& path, std::string* result) {
+    result->clear();
+
+    if (!StartsWith(path, "/devices/virtual/ubi/")) return false;
+
+    /* Beginning of the prefix is the initial "ubi/" after "/devices/virtual/" */
+    std::string::size_type start = 21;
+
+    /* End of the prefix is one path '/' later, capturing the
+       ubi device ID. Example: ubi0 */
+    auto end = path.find('/', start);
+    if (end == std::string::npos) return false;
+
+    auto length = end - start;
+    if (length == 0) return false;
+
+    *result = path.substr(start, length);
+
+    return true;
+}
+
 Permissions::Permissions(const std::string& name, mode_t perm, uid_t uid, gid_t gid)
     : name_(name), perm_(perm), uid_(uid), gid_(gid), prefix_(false), wildcard_(false) {
     // Set 'prefix_' or 'wildcard_' based on the below cases:
@@ -346,6 +367,39 @@ std::vector<std::string> DeviceHandler::GetBlockDeviceSymlinks(const Uevent& uev
     return links;
 }
 
+std::vector<std::string> DeviceHandler::GetUbiDeviceSymlinks(const Uevent& uevent) const {
+    std::string device;
+    std::string type;
+
+    if (FindUbiDevicePrefix(uevent.path, &device)) {
+        type = "ubi";
+    } else {
+        return {};
+    }
+
+    std::vector<std::string> links;
+
+    LOG(VERBOSE) << "found " << type << " device " << device;
+
+    auto link_path = "/dev/" + type + "/" + device;
+
+    if(!uevent.partition_name.empty()) {
+        std::string partition_name_sanitized(uevent.partition_name);
+        SanitizePartitionName(&partition_name_sanitized);
+        if(partition_name_sanitized != uevent.partition_name) {
+            LOG(VERBOSE) << "Linking partition '" << uevent.partition_name << "' as '"
+                         << partition_name_sanitized << "'";
+        }
+        links.emplace_back(link_path + "/by-name/" + partition_name_sanitized);
+    }
+
+    if (uevent.partition_num >= 0) {
+        links.emplace_back(link_path + "/by-num/" + std::to_string(uevent.partition_num));
+    }
+
+    return links;
+}
+
 void DeviceHandler::HandleDevice(const std::string& action, const std::string& devpath, bool block,
                                  int major, int minor, const std::vector<std::string>& links) const {
     if (action == "add") {
@@ -390,6 +444,12 @@ void DeviceHandler::HandleDeviceEvent(const Uevent& uevent) {
 
         if (StartsWith(uevent.path, "/devices")) {
             links = GetBlockDeviceSymlinks(uevent);
+        }
+    } else if (uevent.subsystem == "ubi") {
+        devpath = "/dev/ubi/" + Basename(uevent.path);
+
+        if (StartsWith(uevent.path, "/devices")) {
+            links = GetUbiDeviceSymlinks(uevent);
         }
     } else if (StartsWith(uevent.subsystem, "usb")) {
         if (uevent.subsystem == "usb") {

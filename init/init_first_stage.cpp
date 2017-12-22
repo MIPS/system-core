@@ -208,7 +208,7 @@ bool FirstStageMount::InitRequiredDevices() {
 
 ListenerAction FirstStageMount::UeventCallback(const Uevent& uevent) {
     // Ignores everything that is not a block device.
-    if (uevent.subsystem != "block") {
+    if (uevent.subsystem != "block" && uevent.subsystem != "ubi") {
         return ListenerAction::kContinue;
     }
 
